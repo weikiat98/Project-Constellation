@@ -1,3 +1,5 @@
+> **NOT NEEDED** — This file described the import dependency order of the old synchronous CLI prototype. The project has been superseded by the full-stack deep-reading assistant. Execution flow is now documented in ARCHITECTURE.md.
+
 # Execution Flow Guide - Script Sequence and Dependencies
 
 ## 📋 Script Hierarchy and Dependencies

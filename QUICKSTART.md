@@ -1,3 +1,5 @@
+> **NOT NEEDED** — This file covered the old synchronous CLI prototype. The project has been superseded by the full-stack deep-reading assistant (FastAPI backend + Next.js frontend). See README.md for setup instructions.
+
 # Quick Start Guide - Librarian Agents Team
 
 ## 🚀 Get Started in 3 Minutes

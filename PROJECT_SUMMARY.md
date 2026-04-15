@@ -1,3 +1,5 @@
+> **NOT NEEDED** — This file was an executive summary of the old synchronous CLI prototype (hardcoded SubAgent 1/2/3 roles, no web UI). The project has been superseded by the full-stack deep-reading assistant (FastAPI + Next.js). See README.md for the current project overview.
+
 # Librarian Agents Team - Project Summary
 
 ## 📦 About

@@ -1,3 +1,5 @@
+> **NOT NEEDED** — This file covered the old synchronous CLI prototype. The project has been superseded by the full-stack deep-reading assistant (FastAPI backend + Next.js frontend). See README.md for usage instructions.
+
 # Simple Usage Guide - Which Script to Run?
 
 ## 🎯 Quick Answer

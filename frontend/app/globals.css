@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0f1117;
+  --foreground: #e2e8f0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1a1d27; }
+::-webkit-scrollbar-thumb { background: #3a3f55; border-radius: 3px; }
+
+/* Prose for markdown rendering */
+.prose { color: #e2e8f0; }
+.prose h1, .prose h2, .prose h3 { color: #f1f5f9; font-weight: 600; }
+.prose code { background: #1e2235; border-radius: 4px; padding: 1px 6px; font-size: 0.875em; }
+.prose pre { background: #1e2235; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+.prose blockquote { border-left: 3px solid #4f7af8; padding-left: 1rem; color: #94a3b8; }
+.prose a { color: #4f7af8; text-decoration: underline; }
+.prose table { border-collapse: collapse; width: 100%; }
+.prose th, .prose td { border: 1px solid #2d3148; padding: 0.5rem 0.75rem; }
+.prose th { background: #1e2235; font-weight: 600; }
+
+/* Citation highlight */
+.citation-link {
+  background: #1e3a5f;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 0.8em;
+  color: #60a5fa;
+  cursor: pointer;
+  text-decoration: none;
+}
+.citation-link:hover { background: #1e4a7f; }

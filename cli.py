@@ -1,218 +1,176 @@
 #!/usr/bin/env python3
 """
-Librarian Agents Team - Command Line Interface
-Easy-to-use CLI for document processing
+Deep-Reading Assistant — Command Line Interface
+
+Repoints to the new async orchestrator engine.
 """
 
-import argparse, sys, os
+import argparse
+import asyncio
+import os
+import sys
+import uuid
 from pathlib import Path
 
-from librarian_agents_team import LibrarianAgentsTeam
-from document_loader import DocumentLoader, DocumentSaver
-from document_chunker import DocumentChunker
+
+def _check_api_key():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("Error: ANTHROPIC_API_KEY environment variable not set", file=sys.stderr)
+        print("Set it with: export ANTHROPIC_API_KEY='your-key'", file=sys.stderr)
+        sys.exit(1)
+
+
+async def _run_async(args):
+    from document_loader import DocumentLoader, DocumentSaver
+    from backend.orchestrator.event_bus import SessionEventBus
+    from backend.orchestrator.lead import run_lead
+    from backend.store.sessions import (
+        create_session,
+        add_message,
+        get_chunks_for_document,
+    )
+    from backend.store.documents import DocumentStore
+    from backend.extractors.definitions import extract_definitions
+    from backend.extractors.cross_refs import extract_cross_refs
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print(f"Error: Input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    # Create a transient session
+    session = await create_session(title=f"CLI: {input_path.name}")
+    session_id = session["id"]
+
+    # Ingest document
+    print(f"Loading document: {input_path.name} …", file=sys.stderr)
+    store = DocumentStore(chunk_size=getattr(args, "chunk_size", 8000))
+    result = await store.ingest(session_id, str(input_path))
+    print(
+        f"Ingested {result['chunk_count']} chunks "
+        f"({result.get('page_count', '?')} pages)",
+        file=sys.stderr,
+    )
+
+    # Run extractors
+    chunks = await get_chunks_for_document(result["document_id"])
+    defns = await extract_definitions(result["document_id"], chunks)
+    xrefs = await extract_cross_refs(result["document_id"], chunks)
+    if defns:
+        print(f"Extracted {len(defns)} definitions", file=sys.stderr)
+    if xrefs:
+        print(f"Detected {len(xrefs)} cross-references", file=sys.stderr)
+
+    audience = getattr(args, "audience", "professional")
+
+    if args.interactive:
+        print("\n" + "=" * 60)
+        print("Deep-Reading Assistant — Interactive Mode")
+        print("=" * 60)
+        print(f"Document : {input_path.name}")
+        print(f"Chunks   : {result['chunk_count']}")
+        print(f"Audience : {audience}")
+        print("Type your question or 'quit' to exit")
+        print("=" * 60 + "\n")
+
+        while True:
+            try:
+                request = input("Your question: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\nGoodbye!")
+                break
+
+            if request.lower() in ("quit", "exit", "q"):
+                print("Goodbye!")
+                break
+            if not request:
+                continue
+
+            await add_message(session_id, "user", request)
+
+            print("\nProcessing …\n", file=sys.stderr)
+            bus = SessionEventBus()
+
+            if args.verbose:
+                # Print event trace to stderr
+                async def _verbose_consume(b=bus):
+                    import json
+                    async for line in b.consume():
+                        line = line.strip()
+                        if line.startswith("data:"):
+                            try:
+                                ev = json.loads(line[5:])
+                                etype = ev.get("type", "")
+                                if etype in ("agent_spawned", "tool_use", "artifact_written", "compaction_done"):
+                                    print(f"  [event] {line[5:].strip()}", file=sys.stderr)
+                            except Exception:
+                                pass
+
+                asyncio.create_task(_verbose_consume())
+
+            answer = await run_lead(session_id, request, bus, audience)
+            print("\n" + "=" * 60)
+            print(answer)
+            print("=" * 60 + "\n")
+
+            if args.output:
+                output_path = Path(args.output)
+                with open(output_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n## Question\n{request}\n\n## Answer\n{answer}\n\n")
+                print(f"Appended to {args.output}", file=sys.stderr)
+    else:
+        if not args.request:
+            print("Error: --request is required in non-interactive mode", file=sys.stderr)
+            sys.exit(1)
+
+        await add_message(session_id, "user", args.request)
+        print("Processing …\n", file=sys.stderr)
+
+        bus = SessionEventBus()
+        answer = await run_lead(session_id, args.request, bus, audience)
+
+        if args.output:
+            output_path = Path(args.output)
+            saver = DocumentSaver()
+            ext = output_path.suffix.lower()
+            if ext == ".html":
+                saver.save_html(answer, str(output_path), title=input_path.stem)
+            else:
+                saver.save_text(answer, str(output_path))
+            print(f"Saved to {args.output}", file=sys.stderr)
+        else:
+            print(answer)
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Librarian Agents Team - Intelligent Document Processing',
+        description="Deep-Reading Assistant — intelligent document analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Summarize a document
-  python cli.py -i document.pdf -r "Create a 2-page summary" -o summary.txt
-  
-  # Extract data to tables
-  python cli.py -i report.docx -r "Extract all data into comparison tables" -o tables.html
-  
-  # Process with custom instructions
-  python cli.py -i book.txt -r "Analyze themes and create chapter breakdown" -o analysis.md
-  
-  # Interactive mode
-  python cli.py -i document.pdf --interactive
+  python cli.py -i regulation.pdf -r "What obligations does this impose on small businesses?"
+  python cli.py -i policy.pdf --interactive --audience layperson
+  python cli.py -i act.pdf -r "Summarise Part 3" -o summary.md
+        """,
+    )
 
-Supported input formats: .txt, .md, .pdf, .docx, .html
-Supported output formats: .txt, .md, .html, .docx
-        """
-    )
-    
-    # Input arguments
+    parser.add_argument("-i", "--input", required=True, help="Path to input document")
+    parser.add_argument("-r", "--request", help="Question/instruction for the agent")
+    parser.add_argument("-o", "--output", help="Save answer to this file")
+    parser.add_argument("--chunk-size", type=int, default=8000, help="Max chunk size (chars)")
+    parser.add_argument("--interactive", action="store_true", help="Interactive Q&A mode")
+    parser.add_argument("--verbose", action="store_true", help="Show agent event trace")
     parser.add_argument(
-        '-i', '--input',
-        type=str,
-        required=True,
-        help='Path to input document'
+        "--audience",
+        choices=["layperson", "professional", "expert"],
+        default="professional",
+        help="Explanation depth (default: professional)",
     )
-    
-    parser.add_argument(
-        '-r', '--request',
-        type=str,
-        help='Processing request/instruction for the agents'
-    )
-    
-    parser.add_argument(
-        '-o', '--output',
-        type=str,
-        help='Path to output file (optional, defaults to stdout)'
-    )
-    
-    # Processing options
-    parser.add_argument(
-        '--chunk-size',
-        type=int,
-        default=8000,
-        help='Maximum chunk size for document processing (default: 8000)'
-    )
-    
-    parser.add_argument(
-        '--interactive',
-        action='store_true',
-        help='Interactive mode - allows follow-up questions'
-    )
-    
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Verbose output - show agent activity'
-    )
-    
-    parser.add_argument(
-        '--metadata',
-        action='store_true',
-        help='Extract and display document metadata'
-    )
-    
+
     args = parser.parse_args()
-    
-    # Validate input file
-    input_path = Path(args.input)
-    if not input_path.exists():
-        print(f"❌ Error: Input file not found: {args.input}", file=sys.stderr)
-        sys.exit(1)
-    
-    # Check API key
-    if not os.environ.get('ANTHROPIC_API_KEY'):
-        print("❌ Error: ANTHROPIC_API_KEY environment variable not set", file=sys.stderr)
-        print("Set it with: export ANTHROPIC_API_KEY='your-key'", file=sys.stderr)
-        sys.exit(1)
-    
-    # Load document
-    print("📄 Loading document...", file=sys.stderr)
-    try:
-        loader = DocumentLoader()
-        doc_data = loader.load_document(str(input_path))
-        content = doc_data.get('content', '')
-        
-        if args.verbose:
-            print(f"✓ Loaded {len(content)} characters", file=sys.stderr)
-            if 'page_count' in doc_data:
-                print(f"✓ Document has {doc_data['page_count']} pages", file=sys.stderr)
-        
-        if args.metadata and 'metadata' in doc_data:
-            print("\n📊 Document Metadata:", file=sys.stderr)
-            for key, value in doc_data['metadata'].items():
-                print(f"  {key}: {value}", file=sys.stderr)
-            print()
-        
-    except Exception as e:
-        print(f"❌ Error loading document: {e}", file=sys.stderr)
-        sys.exit(1)
-    
-    # Initialize agents team
-    if args.verbose:
-        print("🤖 Initializing Librarian Agents Team...", file=sys.stderr)
-    
-    team = LibrarianAgentsTeam()
-    
-    # Interactive mode
-    if args.interactive:
-        print("\n" + "="*60)
-        print("Interactive Mode - Librarian Agents Team")
-        print("="*60)
-        print("Document loaded successfully!")
-        print(f"Document: {input_path.name}")
-        print(f"Size: {len(content)} characters")
-        print("\nType your request or 'quit' to exit")
-        print("Type 'continue' to continue a previous response")
-        print("="*60 + "\n")
-        
-        while True:
-            try:
-                request = input("Your request: ").strip()
-                
-                if request.lower() in ['quit', 'exit', 'q']:
-                    print("\nGoodbye! 👋")
-                    break
-                
-                if not request:
-                    continue
-                
-                if request.lower() == 'continue':
-                    print("\n🤖 Processing continuation...\n")
-                    result = team.continue_processing()
-                else:
-                    print("\n🤖 Processing request...\n")
-                    result = team.process_document(request, content)
-                
-                print("\n" + "="*60)
-                print("RESULT")
-                print("="*60 + "\n")
-                print(result)
-                print("\n" + "="*60 + "\n")
-                
-                # Ask if user wants to save
-                save = input("Save this result? (y/N): ").strip().lower()
-                if save == 'y':
-                    output_file = input("Output file path: ").strip()
-                    if output_file:
-                        with open(output_file, 'w', encoding='utf-8') as f:
-                            f.write(result)
-                        print(f"✓ Saved to {output_file}")
-                
-            except KeyboardInterrupt:
-                print("\n\nInterrupted. Goodbye! 👋")
-                break
-            except Exception as e:
-                print(f"\n❌ Error: {e}\n", file=sys.stderr)
-    
-    # Single request mode
-    else:
-        if not args.request:
-            print("❌ Error: --request is required in non-interactive mode", file=sys.stderr)
-            print("Use --interactive for interactive mode", file=sys.stderr)
-            sys.exit(1)
-        
-        if args.verbose:
-            print(f"📝 Request: {args.request}", file=sys.stderr)
-            print("🤖 Processing...\n", file=sys.stderr)
-        
-        try:
-            result = team.process_document(args.request, content)
-            
-            # Output result
-            if args.output:
-                output_path = Path(args.output)
-                output_ext = output_path.suffix.lower()
-                
-                # Save based on file extension
-                saver = DocumentSaver()
-                
-                if output_ext == '.html':
-                    saver.save_html(result, str(output_path), title=input_path.stem)
-                elif output_ext == '.docx':
-                    saver.save_to_docx(result, str(output_path), title=input_path.stem)
-                else:
-                    saver.save_text(result, str(output_path))
-                
-                if args.verbose:
-                    print(f"\n✓ Result saved to {args.output}", file=sys.stderr)
-                else:
-                    print(f"✓ Saved to {args.output}")
-            else:
-                # Print to stdout
-                print(result)
-            
-        except Exception as e:
-            print(f"❌ Error processing document: {e}", file=sys.stderr)
-            sys.exit(1)
+    _check_api_key()
+    asyncio.run(_run_async(args))
+
 
 if __name__ == "__main__":
     main()

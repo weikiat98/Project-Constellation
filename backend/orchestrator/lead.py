@@ -30,7 +30,7 @@ from backend.orchestrator.subagent import run_subagent
 from backend.orchestrator.compactor import maybe_compact
 from backend.orchestrator.event_bus import SessionEventBus
 
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-6")
 WINDOW = 200_000
 
 _LEAD_SYSTEM = """You are the Lead Orchestrator of a multi-agent deep-reading assistant.

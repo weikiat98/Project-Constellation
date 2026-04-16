@@ -191,7 +191,9 @@ Then restart your terminal.
 
 ### 3. Start the backend
 
-> **Important:** run this command from the **repo root**, not from inside `backend/`. Python's import resolution requires the package to be on the path.
+> **Important:** run this command from the **repo root**, not from inside `backend/`.
+>
+> The app is structured as a Python package: `backend/` contains an `__init__.py`, so its modules import each other as `from backend.orchestrator.lead import ...`. When you run `uvicorn` from the repo root, Python adds the repo root to `sys.path`, which means `backend` is a discoverable package. If you `cd backend` first and then run `uvicorn app:app`, Python sees the current directory (`backend/`) on the path instead — there is no `backend` package visible from there, so every cross-module import fails with `ModuleNotFoundError: No module named 'backend'`.
 
 ```bash
 uvicorn backend.app:app --reload --port 8000

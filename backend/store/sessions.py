@@ -147,9 +147,8 @@ async def create_session(title: Optional[str] = None) -> dict:
 
 async def get_session(session_id: str) -> Optional[dict]:
     async with get_db() as db:
-        row = await db.execute_fetchone(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cursor.fetchone()
     return dict(row) if row else None
 
 
@@ -240,7 +239,8 @@ async def insert_chunk(
 
 async def get_chunk(chunk_id: str) -> Optional[dict]:
     async with get_db() as db:
-        row = await db.execute_fetchone("SELECT * FROM chunks WHERE id = ?", (chunk_id,))
+        cursor = await db.execute("SELECT * FROM chunks WHERE id = ?", (chunk_id,))
+        row = await cursor.fetchone()
     return dict(row) if row else None
 
 
@@ -273,10 +273,11 @@ async def search_chunks(document_id: str, query: str, limit: int = 10) -> list[d
 
 async def get_chunk_by_section(document_id: str, section_id: str) -> Optional[dict]:
     async with get_db() as db:
-        row = await db.execute_fetchone(
+        cursor = await db.execute(
             "SELECT * FROM chunks WHERE document_id = ? AND section_id = ? LIMIT 1",
             (document_id, section_id),
         )
+        row = await cursor.fetchone()
     return dict(row) if row else None
 
 
@@ -298,10 +299,11 @@ async def insert_definition(
 
 async def lookup_definition(document_id: str, term: str) -> Optional[dict]:
     async with get_db() as db:
-        row = await db.execute_fetchone(
+        cursor = await db.execute(
             "SELECT * FROM definitions WHERE document_id = ? AND LOWER(term) = LOWER(?) LIMIT 1",
             (document_id, term),
         )
+        row = await cursor.fetchone()
     return dict(row) if row else None
 
 
@@ -366,9 +368,8 @@ async def create_artifact(
 
 async def get_artifact(artifact_id: str) -> Optional[dict]:
     async with get_db() as db:
-        row = await db.execute_fetchone(
-            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
-        )
+        cursor = await db.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,))
+        row = await cursor.fetchone()
     return dict(row) if row else None
 
 

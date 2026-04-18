@@ -22,6 +22,8 @@ export interface TraceEntry {
 interface Props {
   entries: TraceEntry[];
   streaming: boolean;
+  /** When true, hide the internal header + outer collapse control. Used by the inline panel. */
+  embedded?: boolean;
 }
 
 function EntryIcon({ type }: { type: TraceEntry["type"] }) {
@@ -70,7 +72,7 @@ function EntryDetail({ e }: { e: TraceEntry }) {
   return null;
 }
 
-export default function AgentTrace({ entries, streaming }: Props) {
+export default function AgentTrace({ entries, streaming, embedded = false }: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -84,24 +86,25 @@ export default function AgentTrace({ entries, streaming }: Props) {
 
   return (
     <div className="flex flex-col h-full bg-[#13151f]">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#2d3148]">
-        <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
-          <Bot className="w-4 h-4 text-blue-400" />
-          Agent Trace
-          {streaming && (
-            <span className="flex items-center gap-1 text-xs text-emerald-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              live
-            </span>
-          )}
+      {!embedded && (
+        <div className="flex items-center justify-between px-3 py-2 border-b border-[#2d3148]">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
+            <Bot className="w-4 h-4 text-blue-400" />
+            Agent Trace
+            {streaming && (
+              <span className="flex items-center gap-1 text-xs text-emerald-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                live
+              </span>
+            )}
+          </div>
+          <button onClick={() => setCollapsed((c) => !c)} className="text-slate-500 hover:text-slate-300">
+            {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
         </div>
-        <button onClick={() => setCollapsed((c) => !c)} className="text-slate-500 hover:text-slate-300">
-          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-        </button>
-      </div>
+      )}
 
-      {!collapsed && (
+      {(embedded || !collapsed) && (
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {entries.length === 0 && (
             <p className="text-xs text-slate-600 text-center py-8">

@@ -30,7 +30,7 @@ from backend.orchestrator.subagent import run_subagent
 from backend.orchestrator.compactor import maybe_compact
 from backend.orchestrator.event_bus import SessionEventBus
 
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-6")
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001") # change to claude-opus-4-6 for production and use claude-haiku-4-5-20251001 for testing
 WINDOW = 200_000
 
 _LEAD_SYSTEM = """You are the Lead Orchestrator of a multi-agent deep-reading assistant.
@@ -132,9 +132,9 @@ async def run_lead(
             percent=round(est_tokens / WINDOW * 100, 1),
         )
 
-        response = await client.messages.create(
+        async with client.messages.stream(
             model=MODEL,
-            max_tokens=8192,
+            max_tokens=64000,
             system=[
                 {
                     "type": "text",
@@ -144,15 +144,13 @@ async def run_lead(
             ],
             tools=LEAD_TOOLS,
             messages=messages,
-        )
+        ) as stream:
+            async for text_chunk in stream.text_stream:
+                bus.publish("text_delta", agent_id=lead_run_id, delta=text_chunk)
+            response = await stream.get_final_message()
 
         tokens_in += response.usage.input_tokens
         tokens_out += response.usage.output_tokens
-
-        # Stream text deltas
-        for block in response.content:
-            if block.type == "text":
-                bus.publish("text_delta", agent_id=lead_run_id, delta=block.text)
 
         if response.stop_reason == "end_turn":
             # Collect any text content as the final answer

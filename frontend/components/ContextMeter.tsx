@@ -24,15 +24,31 @@ export default function ContextMeter({ sessionId, livePercent, onCompact, compac
   const textColor =
     percent >= 90 ? "text-red-400" : percent >= 70 ? "text-amber-400" : "text-emerald-400";
 
+  // Use one decimal when under 10% so early usage is visible instead of "0%".
+  const display =
+    percent >= 10 ? `${percent.toFixed(0)}%` : percent > 0 ? `${percent.toFixed(1)}%` : "0%";
+
+  // Tiny visual floor: give the bar at least 1px worth of fill whenever we
+  // have any usage so users see something animate.
+  const barPercent = percent > 0 && percent < 1 ? 1 : Math.min(percent, 100);
+
+  const tokens = usage?.tokens;
+  const window = usage?.window;
+  const tooltip =
+    tokens != null && window != null ? `${tokens.toLocaleString()} / ${window.toLocaleString()} tokens` : undefined;
+
   return (
-    <div className="flex items-center gap-3 px-3 py-1.5 bg-[#1a1d27] rounded-lg text-xs">
+    <div
+      className="flex items-center gap-3 px-3 py-1.5 bg-[#1a1d27] rounded-lg text-xs"
+      title={tooltip}
+    >
       <Cpu className="w-3.5 h-3.5 text-slate-400" />
       <span className="text-slate-400">Context</span>
-      <span className={`font-mono font-semibold ${textColor}`}>{percent.toFixed(0)}%</span>
+      <span className={`font-mono font-semibold ${textColor}`}>{display}</span>
       <div className="w-20 h-1.5 bg-[#2d3148] rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-500 ${color}`}
-          style={{ width: `${Math.min(percent, 100)}%` }}
+          style={{ width: `${barPercent}%` }}
         />
       </div>
       {percent >= 70 && (

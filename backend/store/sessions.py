@@ -29,7 +29,8 @@ _DDL_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS sessions (
         id          TEXT PRIMARY KEY,
         title       TEXT,
-        created_at  TEXT NOT NULL
+        created_at  TEXT NOT NULL,
+        pinned      INTEGER NOT NULL DEFAULT 0
     )""",
     """CREATE TABLE IF NOT EXISTS messages (
         id          TEXT PRIMARY KEY,
@@ -40,10 +41,11 @@ _DDL_STATEMENTS = [
         created_at  TEXT NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS documents (
-        id          TEXT PRIMARY KEY,
-        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        filename    TEXT NOT NULL,
-        chunk_count INTEGER NOT NULL DEFAULT 0
+        id                TEXT PRIMARY KEY,
+        session_id        TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        filename          TEXT NOT NULL,
+        original_filename TEXT,
+        chunk_count       INTEGER NOT NULL DEFAULT 0
     )""",
     """CREATE TABLE IF NOT EXISTS chunks (
         id          TEXT PRIMARY KEY,
@@ -101,6 +103,16 @@ _DDL_STATEMENTS = [
         tokens_in       INTEGER NOT NULL DEFAULT 0,
         tokens_out      INTEGER NOT NULL DEFAULT 0
     )""",
+    """CREATE TABLE IF NOT EXISTS trace_events (
+        id          TEXT PRIMARY KEY,
+        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        run_index   INTEGER NOT NULL,
+        seq         INTEGER NOT NULL,
+        event_type  TEXT NOT NULL,
+        payload     TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_trace_session ON trace_events(session_id, run_index, seq)",
 ]
 
 
@@ -110,6 +122,17 @@ async def _init_db(db: aiosqlite.Connection) -> None:
         return
     for stmt in _DDL_STATEMENTS:
         await db.execute(stmt)
+    # Lightweight migration: add pinned column on pre-existing DBs.
+    cursor = await db.execute("PRAGMA table_info(sessions)")
+    cols = [r[1] for r in await cursor.fetchall()]
+    if "pinned" not in cols:
+        await db.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+    # Migration: ensure documents has original_filename (falls back to filename).
+    cursor = await db.execute("PRAGMA table_info(documents)")
+    doc_cols = [r[1] for r in await cursor.fetchall()]
+    if "original_filename" not in doc_cols:
+        await db.execute("ALTER TABLE documents ADD COLUMN original_filename TEXT")
+        await db.execute("UPDATE documents SET original_filename = filename WHERE original_filename IS NULL")
     await db.commit()
     _db_initialised = True
 
@@ -138,26 +161,94 @@ async def create_session(title: Optional[str] = None) -> dict:
     now = _now()
     async with get_db() as db:
         await db.execute(
-            "INSERT INTO sessions (id, title, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO sessions (id, title, created_at, pinned) VALUES (?, ?, ?, 0)",
             (sid, title, now),
         )
         await db.commit()
-    return {"id": sid, "title": title, "created_at": now}
+    return {"id": sid, "title": title, "created_at": now, "pinned": False}
 
 
 async def get_session(session_id: str) -> Optional[dict]:
     async with get_db() as db:
         cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = await cursor.fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    data["pinned"] = bool(data.get("pinned", 0))
+    return data
 
 
 async def list_sessions() -> list[dict]:
     async with get_db() as db:
         rows = await db.execute_fetchall(
-            "SELECT * FROM sessions ORDER BY created_at DESC"
+            "SELECT * FROM sessions ORDER BY pinned DESC, created_at DESC"
         )
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["pinned"] = bool(d.get("pinned", 0))
+        out.append(d)
+    return out
+
+
+async def update_session(
+    session_id: str,
+    title: Optional[str] = None,
+    pinned: Optional[bool] = None,
+) -> Optional[dict]:
+    """Update title and/or pinned flag. Returns refreshed session row or None."""
+    sets: list[str] = []
+    vals: list = []
+    if title is not None:
+        sets.append("title = ?")
+        vals.append(title)
+    if pinned is not None:
+        sets.append("pinned = ?")
+        vals.append(1 if pinned else 0)
+    if not sets:
+        return await get_session(session_id)
+    vals.append(session_id)
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",
+            tuple(vals),
+        )
+        await db.commit()
+    return await get_session(session_id)
+
+
+async def delete_session(session_id: str) -> bool:
+    """Delete a session and all cascade children (messages, docs, chunks, artifacts)."""
+    async with get_db() as db:
+        cursor = await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        deleted = (cursor.rowcount or 0) > 0
+        await db.commit()
+    return deleted
+
+
+async def delete_messages_after(session_id: str, message_id: str) -> int:
+    """Delete the given message and every message after it (by created_at).
+
+    Used for edit/retry flows: truncating history so the agent re-runs from
+    the edited or retried prompt. Returns the number of rows deleted.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT created_at FROM messages WHERE id = ? AND session_id = ?",
+            (message_id, session_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return 0
+        pivot = row["created_at"]
+        cursor = await db.execute(
+            "DELETE FROM messages WHERE session_id = ? AND created_at >= ?",
+            (session_id, pivot),
+        )
+        deleted = cursor.rowcount or 0
+        await db.commit()
+    return deleted
 
 
 # ─── Messages ────────────────────────────────────────────────────────────────
@@ -195,12 +286,16 @@ async def get_messages(session_id: str) -> list[dict]:
 
 # ─── Documents / chunks ──────────────────────────────────────────────────────
 
-async def create_document(session_id: str, filename: str) -> str:
+async def create_document(
+    session_id: str, filename: str, original_filename: Optional[str] = None
+) -> str:
     did = str(uuid.uuid4())
+    display_name = original_filename or filename
     async with get_db() as db:
         await db.execute(
-            "INSERT INTO documents (id, session_id, filename, chunk_count) VALUES (?, ?, ?, 0)",
-            (did, session_id, filename),
+            "INSERT INTO documents (id, session_id, filename, original_filename, chunk_count) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (did, session_id, filename, display_name),
         )
         await db.commit()
     return did
@@ -413,7 +508,68 @@ async def get_documents(session_id: str) -> list[dict]:
         rows = await db.execute_fetchall(
             "SELECT * FROM documents WHERE session_id = ?", (session_id,)
         )
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # Expose the human-readable name under `filename` for all callers.
+        display = d.get("original_filename") or d.get("filename")
+        d["filename"] = display
+        out.append(d)
+    return out
+
+
+# ─── Trace events ────────────────────────────────────────────────────────────
+
+async def next_trace_run_index(session_id: str) -> int:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COALESCE(MAX(run_index), -1) + 1 FROM trace_events WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def append_trace_event(
+    session_id: str,
+    run_index: int,
+    seq: int,
+    event_type: str,
+    payload: dict,
+) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO trace_events (id, session_id, run_index, seq, event_type, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                session_id,
+                run_index,
+                seq,
+                event_type,
+                json.dumps(payload),
+                _now(),
+            ),
+        )
+        await db.commit()
+
+
+async def get_trace_events(session_id: str) -> list[dict]:
+    async with get_db() as db:
+        rows = await db.execute_fetchall(
+            "SELECT run_index, seq, event_type, payload, created_at FROM trace_events "
+            "WHERE session_id = ? ORDER BY run_index, seq",
+            (session_id,),
+        )
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["payload"] = json.loads(d["payload"])
+        except (TypeError, ValueError):
+            d["payload"] = {}
+        out.append(d)
+    return out
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

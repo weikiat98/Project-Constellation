@@ -8,6 +8,7 @@ export interface Session {
   id: string;
   title: string | null;
   created_at: string;
+  pinned?: boolean;
 }
 
 export interface Message {
@@ -24,6 +25,15 @@ export interface Document {
   session_id: string;
   filename: string;
   chunk_count: number;
+  original_filename?: string | null;
+}
+
+export interface PersistedTraceEvent {
+  run_index: number;
+  seq: number;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface Artifact {
@@ -74,6 +84,21 @@ export const api = {
 
   getSession: (id: string) => request<SessionDetail>(`/sessions/${id}`),
 
+  updateSession: (id: string, patch: { title?: string; pinned?: boolean }) =>
+    request<Session>(`/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteSession: (id: string) =>
+    request<{ deleted: boolean }>(`/sessions/${id}`, { method: "DELETE" }),
+
+  truncateAfter: (sessionId: string, messageId: string) =>
+    request<{ deleted: number }>(
+      `/sessions/${sessionId}/messages/after/${messageId}`,
+      { method: "DELETE" }
+    ),
+
   // Documents
   uploadDocument: (sessionId: string, file: File) => {
     const form = new FormData();
@@ -103,4 +128,8 @@ export const api = {
 
   // Artifacts
   getArtifact: (id: string) => request<Artifact>(`/artifacts/${id}`),
+
+  // Trace history (persisted)
+  getTrace: (sessionId: string) =>
+    request<{ events: PersistedTraceEvent[] }>(`/sessions/${sessionId}/trace`),
 };

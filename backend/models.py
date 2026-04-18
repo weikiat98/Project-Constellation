@@ -15,10 +15,16 @@ class SessionCreate(BaseModel):
     title: Optional[str] = None
 
 
+class SessionUpdate(BaseModel):
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
 class SessionOut(BaseModel):
     id: str
     title: Optional[str]
     created_at: datetime
+    pinned: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -48,6 +54,7 @@ class DocumentOut(BaseModel):
     session_id: str
     filename: str
     chunk_count: int
+    original_filename: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

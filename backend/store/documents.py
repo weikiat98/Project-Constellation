@@ -34,11 +34,19 @@ class DocumentStore:
         self._loader = DocumentLoader()
         self._chunker = DocumentChunker(max_chunk_size=chunk_size)
 
-    async def ingest(self, session_id: str, file_path: str) -> dict[str, Any]:
+    async def ingest(
+        self,
+        session_id: str,
+        file_path: str,
+        original_filename: Optional[str] = None,
+    ) -> dict[str, Any]:
         """
         Load, chunk, and store a document.
 
-        Returns a dict with document_id, filename, chunk_count.
+        ``original_filename`` is what the user sees; ``file_path`` may be a
+        random OS temp path. If omitted, we fall back to ``path.name``.
+
+        Returns a dict with document_id, filename (user-facing), chunk_count.
         """
         path = Path(file_path)
         doc_data = self._loader.load_document(str(path))
@@ -47,7 +55,10 @@ class DocumentStore:
 
         raw_chunks = self._chunker.smart_chunk(content)
 
-        document_id = await create_document(session_id, path.name)
+        display_name = original_filename or path.name
+        document_id = await create_document(
+            session_id, display_name, original_filename=display_name
+        )
 
         chunk_ids: list[str] = []
         for idx, raw in enumerate(raw_chunks):
@@ -71,7 +82,7 @@ class DocumentStore:
 
         return {
             "document_id": document_id,
-            "filename": path.name,
+            "filename": display_name,
             "chunk_count": len(raw_chunks),
             "page_count": page_count,
             "chunk_ids": chunk_ids,

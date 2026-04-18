@@ -122,9 +122,9 @@ async def run_subagent(
 
     # Agentic loop
     for _iteration in range(20):  # safety limit
-        response = await client.messages.create(
+        async with client.messages.stream(
             model=MODEL,
-            max_tokens=8192,
+            max_tokens=10000,
             system=[
                 {
                     "type": "text",
@@ -134,17 +134,18 @@ async def run_subagent(
             ],
             tools=_SUBAGENT_TOOLS,
             messages=messages,
-        )
+        ) as stream:
+            async for text_chunk in stream.text_stream:
+                bus.publish("text_delta", agent_id=agent_id, delta=text_chunk)
+                result_text += text_chunk
+            response = await stream.get_final_message()
 
         tokens_in += response.usage.input_tokens
         tokens_out += response.usage.output_tokens
 
-        # Stream text deltas to bus
+        # Emit tool_use events for any tool calls in the final message
         for block in response.content:
-            if block.type == "text":
-                bus.publish("text_delta", agent_id=agent_id, delta=block.text)
-                result_text += block.text
-            elif block.type == "tool_use":
+            if block.type == "tool_use":
                 bus.publish(
                     "tool_use",
                     agent_id=agent_id,

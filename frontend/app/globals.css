@@ -29,6 +29,15 @@ body {
 .prose th, .prose td { border: 1px solid #2d3148; padding: 0.5rem 0.75rem; }
 .prose th { background: #1e2235; font-weight: 600; }
 
+/* Artifact preview slide-in */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* Citation highlight */
 .citation-link {
   background: #1e3a5f;

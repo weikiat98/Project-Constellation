@@ -20,11 +20,13 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
 } from "lucide-react";
-import type { Artifact, Document } from "@/lib/api";
+import { api, type Artifact, type Document, type TokenCount } from "@/lib/api";
 import CitationLink from "./CitationLink";
 import ArtifactCard from "./ArtifactCard";
 import ContextMeter from "./ContextMeter";
+import TokenCounter from "./TokenCounter";
 import AgentTracePanel from "./AgentTracePanel";
 import type { TraceEntry } from "./AgentTrace";
 
@@ -34,36 +36,141 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const CITATION_RE = new RegExp(`\\[(${UUID}(?:\\s*[,;]\\s*${UUID})*)\\]`, "g");
 const UUID_RE = new RegExp(UUID, "g");
 
-function injectCitations(nodes: React.ReactNode, onCitation: (id: string) => void): React.ReactNode {
-  // Walk a React children tree and replace `[<uuid>(, <uuid>)*]` substrings
-  // inside text nodes with one or more <CitationLink/> elements. Preserves
-  // inline markdown formatting (bold, italic, links) around the citations.
-  const replaceInString = (text: string, keyPrefix: string): React.ReactNode[] => {
-    const parts: React.ReactNode[] = [];
-    let last = 0;
-    let match: RegExpExecArray | null;
-    CITATION_RE.lastIndex = 0;
-    while ((match = CITATION_RE.exec(text)) !== null) {
-      if (match.index > last) parts.push(text.slice(last, match.index));
-      const ids = match[1].match(UUID_RE) ?? [];
-      ids.forEach((id, i) => {
-        parts.push(
-          <CitationLink key={`${keyPrefix}-${match!.index}-${i}`} chunkId={id} onClick={onCitation} />
-        );
-      });
-      last = match.index + match[0].length;
-    }
-    if (last < text.length) parts.push(text.slice(last));
-    return parts;
-  };
+// Context passed through markdown rendering so a text node knows how to decorate
+// itself: citations (always) + search highlights (when a query is active).
+interface RenderContext {
+  onCitation: (id: string) => void;
+  messageId: string;
+  // Cumulative count of matches in all *previous* messages, so this message can
+  // assign globally-unique indices to its matches.
+  baseMatchIndex: number;
+  query: string; // already lower-cased; empty string means no search
+  currentMatchIndex: number; // -1 if none
+}
 
-  if (typeof nodes === "string") return replaceInString(nodes, "s");
+function highlightString(
+  text: string,
+  query: string,
+  baseIndex: number,
+  keyPrefix: string,
+  currentMatchIndex: number,
+  localOffset: { n: number }
+): React.ReactNode[] {
+  // Split `text` on case-insensitive occurrences of `query`, wrapping each
+  // match in a <mark> with a data attribute so we can scroll-to-current.
+  if (!query) return [text];
+  const parts: React.ReactNode[] = [];
+  const lower = text.toLowerCase();
+  let last = 0;
+  let from = 0;
+  while (from <= lower.length - query.length) {
+    const hit = lower.indexOf(query, from);
+    if (hit === -1) break;
+    if (hit > last) parts.push(text.slice(last, hit));
+    const globalIdx = baseIndex + localOffset.n;
+    const isCurrent = globalIdx === currentMatchIndex;
+    parts.push(
+      <mark
+        key={`${keyPrefix}-m${hit}`}
+        data-match-index={globalIdx}
+        className={
+          isCurrent
+            ? "bg-amber-400 text-slate-900 rounded-sm px-0.5"
+            : "bg-amber-400/40 text-inherit rounded-sm px-0.5"
+        }
+      >
+        {text.slice(hit, hit + query.length)}
+      </mark>
+    );
+    localOffset.n += 1;
+    last = hit + query.length;
+    from = last;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function decorateText(text: string, keyPrefix: string, ctx: RenderContext): React.ReactNode[] {
+  // Two-pass: first split on citation brackets, then for non-citation
+  // sub-strings, split on the search query and wrap hits in <mark>.
+  const out: React.ReactNode[] = [];
+  const localOffset = { n: 0 };
+  let last = 0;
+  let match: RegExpExecArray | null;
+  CITATION_RE.lastIndex = 0;
+  while ((match = CITATION_RE.exec(text)) !== null) {
+    if (match.index > last) {
+      out.push(
+        ...highlightString(
+          text.slice(last, match.index),
+          ctx.query,
+          ctx.baseMatchIndex,
+          `${keyPrefix}-${last}`,
+          ctx.currentMatchIndex,
+          localOffset
+        )
+      );
+    }
+    const ids = match[1].match(UUID_RE) ?? [];
+    ids.forEach((id, i) => {
+      out.push(
+        <CitationLink key={`${keyPrefix}-c${match!.index}-${i}`} chunkId={id} onClick={ctx.onCitation} />
+      );
+    });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) {
+    out.push(
+      ...highlightString(
+        text.slice(last),
+        ctx.query,
+        ctx.baseMatchIndex,
+        `${keyPrefix}-${last}`,
+        ctx.currentMatchIndex,
+        localOffset
+      )
+    );
+  }
+  return out;
+}
+
+function injectCitations(nodes: React.ReactNode, ctx: RenderContext): React.ReactNode {
+  if (typeof nodes === "string") return decorateText(nodes, "s", ctx);
   if (Array.isArray(nodes)) {
     return nodes.flatMap((n, i) =>
-      typeof n === "string" ? replaceInString(n, `a${i}`) : [n]
+      typeof n === "string" ? decorateText(n, `a${i}`, ctx) : [n]
     );
   }
   return nodes;
+}
+
+function renderHighlightedPlain(
+  text: string,
+  query: string,
+  baseIndex: number,
+  currentMatchIndex: number,
+  keyPrefix: string
+): React.ReactNode {
+  // For non-markdown bubbles (user messages). Returns a single array of nodes
+  // with <mark> wrappers around query occurrences, numbered globally so the
+  // current-match styling and scroll-into-view work the same as in assistant
+  // markdown.
+  const localOffset = { n: 0 };
+  return highlightString(text, query, baseIndex, keyPrefix, currentMatchIndex, localOffset);
+}
+
+function countMatches(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  const lower = haystack.toLowerCase();
+  while (from <= lower.length - needle.length) {
+    const hit = lower.indexOf(needle, from);
+    if (hit === -1) break;
+    count += 1;
+    from = hit + needle.length;
+  }
+  return count;
 }
 
 export interface ChatMessage {
@@ -103,24 +210,24 @@ interface Props {
 
 // Shared ReactMarkdown config so markdown renders identically in streaming
 // vs. finalized assistant messages.
-const markdownComponents = (onCitationClick: (id: string) => void) => ({
+const markdownComponents = (ctx: RenderContext) => ({
   p: ({ children }: { children?: React.ReactNode }) => (
-    <p>{injectCitations(children, onCitationClick)}</p>
+    <p>{injectCitations(children, ctx)}</p>
   ),
   li: ({ children }: { children?: React.ReactNode }) => (
-    <li>{injectCitations(children, onCitationClick)}</li>
+    <li>{injectCitations(children, ctx)}</li>
   ),
   h1: ({ children }: { children?: React.ReactNode }) => (
-    <h1>{injectCitations(children, onCitationClick)}</h1>
+    <h1>{injectCitations(children, ctx)}</h1>
   ),
   h2: ({ children }: { children?: React.ReactNode }) => (
-    <h2>{injectCitations(children, onCitationClick)}</h2>
+    <h2>{injectCitations(children, ctx)}</h2>
   ),
   h3: ({ children }: { children?: React.ReactNode }) => (
-    <h3>{injectCitations(children, onCitationClick)}</h3>
+    <h3>{injectCitations(children, ctx)}</h3>
   ),
   h4: ({ children }: { children?: React.ReactNode }) => (
-    <h4>{injectCitations(children, onCitationClick)}</h4>
+    <h4>{injectCitations(children, ctx)}</h4>
   ),
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
     <a href={href} target="_blank" rel="noopener noreferrer">
@@ -153,12 +260,70 @@ export default function ChatPane({
   const [plusOpen, setPlusOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+  const [tokenCount, setTokenCount] = useState<TokenCount | null>(null);
+  const [countingTokens, setCountingTokens] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+
+  // Debounced token-count fetch: recomputes ~400ms after the user stops typing,
+  // also refreshes when the document set changes (new upload → larger base).
+  // Skipped during streaming to avoid spamming the endpoint mid-run.
+  useEffect(() => {
+    if (isStreaming) return;
+    const handle = window.setTimeout(() => {
+      setCountingTokens(true);
+      api.countTokens(sessionId, input)
+        .then((tc) => setTokenCount(tc))
+        .catch(() => {})
+        .finally(() => setCountingTokens(false));
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [input, sessionId, documents.length, isStreaming]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText]);
+
+  const q = searchQuery.trim().toLowerCase();
+
+  // Per-message cumulative base indices + running total, so each message knows
+  // the global index to assign to its first match.
+  const { perMessageBaseIndex, totalMatches } = (() => {
+    const bases: number[] = [];
+    let running = 0;
+    for (const m of messages) {
+      bases.push(running);
+      running += q ? countMatches(m.content, q) : 0;
+    }
+    return { perMessageBaseIndex: bases, totalMatches: running };
+  })();
+
+  // Reset the current match cursor when the query changes or matches shift.
+  useEffect(() => {
+    if (totalMatches === 0) {
+      setCurrentMatchIndex(0);
+    } else if (currentMatchIndex >= totalMatches) {
+      setCurrentMatchIndex(0);
+    }
+    // Intentionally depend only on query & total — stepping shouldn't re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, totalMatches]);
+
+  // Scroll the currently-focused match into view.
+  useEffect(() => {
+    if (!q || totalMatches === 0) return;
+    const el = messagesRef.current?.querySelector(
+      `mark[data-match-index="${currentMatchIndex}"]`
+    ) as HTMLElement | null;
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [currentMatchIndex, q, totalMatches, messages]);
+
+  function stepMatch(delta: number) {
+    if (totalMatches === 0) return;
+    setCurrentMatchIndex((prev) => (prev + delta + totalMatches) % totalMatches);
+  }
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -177,11 +342,6 @@ export default function ChatPane({
     onSend(text, documents.map((d) => d.filename));
   }
 
-  const q = searchQuery.trim().toLowerCase();
-  const visibleMessages = q
-    ? messages.filter((m) => m.content.toLowerCase().includes(q))
-    : messages;
-
   return (
     <div className="flex flex-col h-full relative">
       {/* In-session search bar */}
@@ -192,14 +352,39 @@ export default function ChatPane({
             autoFocus
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                stepMatch(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                setSearchOpen(false);
+                setSearchQuery("");
+              }
+            }}
             placeholder="Search in this conversation…"
             className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 outline-none"
           />
           {q && (
-            <span className="text-xs text-slate-500">
-              {visibleMessages.length} / {messages.length}
+            <span className="text-xs text-slate-500 tabular-nums">
+              {totalMatches === 0 ? "0/0" : `${currentMatchIndex + 1} / ${totalMatches}`}
             </span>
           )}
+          <button
+            onClick={() => stepMatch(-1)}
+            disabled={totalMatches === 0}
+            title="Previous match (Shift+Enter)"
+            className="p-1 text-slate-500 hover:text-slate-200 disabled:opacity-30 disabled:hover:text-slate-500"
+          >
+            <ChevronUp className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => stepMatch(1)}
+            disabled={totalMatches === 0}
+            title="Next match (Enter)"
+            className="p-1 text-slate-500 hover:text-slate-200 disabled:opacity-30 disabled:hover:text-slate-500"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
           <button
             onClick={() => { setSearchOpen(false); setSearchQuery(""); }}
             className="p-1 text-slate-500 hover:text-slate-200"
@@ -210,25 +395,28 @@ export default function ChatPane({
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+      <div ref={messagesRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
         {messages.length === 0 && !isStreaming && (
           <div className="text-center text-slate-600 text-sm pt-16">
             Upload a document, then ask a question.
           </div>
         )}
 
-        {visibleMessages.map((msg, idx) => (
+        {messages.map((msg, idx) => (
           <MessageRow
             key={msg.id}
             msg={msg}
             isLastAssistant={
-              msg.role === "assistant" && idx === visibleMessages.length - 1
+              msg.role === "assistant" && idx === messages.length - 1
             }
             artifacts={artifacts}
             onCitationClick={onCitationClick}
             onRetry={onRetry}
             onEdit={onEdit}
             onArtifactPreview={onArtifactPreview}
+            searchQuery={q}
+            baseMatchIndex={perMessageBaseIndex[idx] ?? 0}
+            currentMatchIndex={currentMatchIndex}
           />
         ))}
 
@@ -254,7 +442,13 @@ export default function ChatPane({
                   <div className="prose prose-sm prose-invert max-w-none">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
-                      components={markdownComponents(onCitationClick)}
+                      components={markdownComponents({
+                        onCitation: onCitationClick,
+                        messageId: "streaming",
+                        baseMatchIndex: 0,
+                        query: "",
+                        currentMatchIndex: -1,
+                      })}
                     >
                       {streamingText}
                     </ReactMarkdown>
@@ -350,8 +544,14 @@ export default function ChatPane({
             )}
           </div>
 
-          {/* Context meter in bar */}
-          <div className="flex items-center justify-end pt-2 border-t border-[#2d3148]/50 mt-2">
+          {/* Token counter + context meter in bar — counter sits directly to
+              the left of the context percentage bar, both right-aligned. */}
+          <div className="flex items-center justify-end pt-2 border-t border-[#2d3148]/50 mt-2 gap-3">
+            <TokenCounter
+              count={tokenCount}
+              loading={countingTokens}
+              hasDraft={input.trim().length > 0}
+            />
             <ContextMeter
               sessionId={sessionId}
               livePercent={liveContextPercent}
@@ -374,6 +574,9 @@ function MessageRow({
   onRetry,
   onEdit,
   onArtifactPreview,
+  searchQuery,
+  baseMatchIndex,
+  currentMatchIndex,
 }: {
   msg: ChatMessage;
   isLastAssistant: boolean;
@@ -382,6 +585,9 @@ function MessageRow({
   onRetry?: (id: string) => void;
   onEdit?: (id: string, newContent: string) => void;
   onArtifactPreview?: (artifact: Artifact) => void;
+  searchQuery: string;
+  baseMatchIndex: number;
+  currentMatchIndex: number;
 }) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -466,7 +672,17 @@ function MessageRow({
                     ))}
                   </div>
                 )}
-                <span className="whitespace-pre-wrap">{msg.content}</span>
+                <span className="whitespace-pre-wrap">
+                  {searchQuery
+                    ? renderHighlightedPlain(
+                        msg.content,
+                        searchQuery,
+                        baseMatchIndex,
+                        currentMatchIndex,
+                        `u-${msg.id}`
+                      )
+                    : msg.content}
+                </span>
               </div>
               {/* Actions: bottom-left of bubble */}
               <div className="flex items-center gap-1 self-start pl-1">
@@ -508,14 +724,31 @@ function MessageRow({
             <ThinkingPanel text={msg.thinking} live={false} />
           </div>
         )}
-        <div className="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={markdownComponents(onCitationClick)}
-          >
-            {msg.content}
-          </ReactMarkdown>
-        </div>
+        {msg.content.trim() ? (
+          <div className="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={markdownComponents({
+                onCitation: onCitationClick,
+                messageId: msg.id,
+                baseMatchIndex,
+                query: searchQuery,
+                currentMatchIndex,
+              })}
+            >
+              {msg.content}
+            </ReactMarkdown>
+          </div>
+        ) : (
+          // Legacy empty-message guard: older sessions may have persisted an
+          // empty assistant bubble when the Lead skipped `finalize`. Backend
+          // now backfills a fallback, so this only triggers for stale rows.
+          <div className="text-xs text-amber-400/80 italic bg-amber-500/5 border border-amber-500/20 rounded-md px-3 py-2">
+            The assistant didn&apos;t return a visible reply for this turn.
+            {producedArtifacts.length > 0 && " The generated files below are the output — click Retry to regenerate a recap."}
+            {producedArtifacts.length === 0 && " Click Retry to run this prompt again."}
+          </div>
+        )}
         {producedArtifacts.length > 0 && (
           <div className="mt-3 space-y-2 max-w-[90%]">
             <p className="text-xs text-slate-500 font-medium">Generated files</p>
@@ -617,3 +850,4 @@ function IconBtn({
     </button>
   );
 }
+

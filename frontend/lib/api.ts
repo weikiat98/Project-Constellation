@@ -4,11 +4,14 @@
 
 const BASE = "/api";
 
+export type Audience = "layperson" | "professional" | "expert";
+
 export interface Session {
   id: string;
   title: string | null;
   created_at: string;
   pinned?: boolean;
+  audience?: Audience;
 }
 
 export interface Message {
@@ -18,6 +21,8 @@ export interface Message {
   content: string;
   token_usage: number | null;
   created_at: string;
+  artifact_ids?: string[];
+  thinking?: string | null;
 }
 
 export interface Document {
@@ -58,7 +63,13 @@ export interface ContextUsage {
   percent: number;
 }
 
-export type Audience = "layperson" | "professional" | "expert";
+export interface TokenCount {
+  prompt_tokens: number;  // tokens from the draft message alone
+  base_tokens: number;    // system + tools + doc index + history
+  total_tokens: number;
+  window: number;
+  percent: number;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -84,7 +95,10 @@ export const api = {
 
   getSession: (id: string) => request<SessionDetail>(`/sessions/${id}`),
 
-  updateSession: (id: string, patch: { title?: string; pinned?: boolean }) =>
+  updateSession: (
+    id: string,
+    patch: { title?: string; pinned?: boolean; audience?: Audience }
+  ) =>
     request<Session>(`/sessions/${id}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -124,6 +138,12 @@ export const api = {
   compact: (sessionId: string) =>
     request<{ compacted: boolean }>(`/sessions/${sessionId}/compact`, {
       method: "POST",
+    }),
+
+  countTokens: (sessionId: string, content: string) =>
+    request<TokenCount>(`/sessions/${sessionId}/count_tokens`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
     }),
 
   // Artifacts

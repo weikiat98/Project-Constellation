@@ -17,6 +17,49 @@ import SessionFiles from "@/components/SessionFiles";
 let _uid = 0;
 function uid() { return String(++_uid); }
 
+// Detect explicit audience signals in a prompt. Returns the inferred audience
+// or null if the prompt contains no explicit instruction.
+// Only fires on clear, unambiguous phrasings so casual language doesn't
+// accidentally override the user's toggle choice.
+function inferAudience(text: string): import("@/lib/api").Audience | null {
+  const t = text.toLowerCase();
+
+  const laypersonPatterns = [
+    /\blayman'?s?\s+terms?\b/,
+    /\blayperson\b/,
+    /\bsimple\s+(terms?|language|english|words?|explanation|way)\b/,
+    /\bexplain\s+(it\s+)?simply\b/,
+    /\bplain\s+(english|language|terms?|words?)\b/,
+    /\beas(y|ily)\s+to\s+understand\b/,
+    /\bnon[- ]?technical\b/,
+    /\bno\s+jargon\b/,
+    /\blike\s+i'?m?\s+(a\s+)?(5|five|kid|child|beginner|novice|dummy)\b/,
+    /\beli5\b/,
+    /\bsimplif(y|ied)\b/,
+  ];
+
+  const expertPatterns = [
+    /\bexpert\s+(level|terms?|language|analysis|view)\b/,
+    /\btechnical\s+(terms?|language|detail|analysis|explanation)\b/,
+    /\bin\s+depth\s+technical\b/,
+    /\bprecise\s+(legal|technical)\b/,
+    /\bfull\s+(legal|technical)\s+(detail|analysis)\b/,
+    /\bassume\s+(i\s+am|i'?m|we\s+are|we'?re)\s+(an?\s+)?(expert|professional|lawyer|specialist|engineer)\b/,
+  ];
+
+  const professionalPatterns = [
+    /\bprofessional\s+(terms?|language|tone|explanation|summary)\b/,
+    /\bfor\s+a\s+professional\b/,
+    /\bbusiness\s+(language|terms?|context)\b/,
+    /\bdomain\s+terminology\b/,
+  ];
+
+  if (laypersonPatterns.some((p) => p.test(t))) return "layperson";
+  if (expertPatterns.some((p) => p.test(t))) return "expert";
+  if (professionalPatterns.some((p) => p.test(t))) return "professional";
+  return null;
+}
+
 function persistedToTrace(e: {
   run_index: number;
   seq: number;
@@ -132,22 +175,27 @@ export default function SessionPage() {
             setTraceEntries((p) => [...p, { id: uid(), type: "compaction_done", timestamp: Date.now(), before_tokens: event.before_tokens, after_tokens: event.after_tokens }]);
             break;
           case "run_complete":
-            if (accumulatedText) {
-              const thinkingSnapshot = accumulatedThinking;
-              const artifactSnapshot = [...runArtifactIds];
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: uid(),
-                  role: "assistant",
-                  content: accumulatedText,
-                  thinking: thinkingSnapshot || undefined,
-                  artifactIds: artifactSnapshot.length ? artifactSnapshot : undefined,
-                },
-              ]);
-              accumulatedText = "";
-              accumulatedThinking = "";
-            }
+            // The backend persisted the assistant message (with its artifact
+            // IDs and thinking trace). Refetch authoritative state instead of
+            // relying on in-stream accumulators — this also repairs races
+            // where `final_message` was empty or arrived out of order.
+            api.getSession(sessionId).then((d) => {
+              setSession(d.session);
+              setArtifacts(d.artifacts);
+              setMessages(
+                d.messages.map((m) => ({
+                  id: m.id,
+                  role: m.role as "user" | "assistant",
+                  content: m.content,
+                  artifactIds:
+                    m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
+                  thinking: m.thinking || undefined,
+                }))
+              );
+            }).catch(() => {});
+            accumulatedText = "";
+            accumulatedThinking = "";
+            runArtifactIds.length = 0;
             setStreamingText("");
             setThinkingText("");
             setIsStreaming(false);
@@ -163,22 +211,25 @@ export default function SessionPage() {
         }
       },
       () => {
-        if (accumulatedText) {
-          const thinkingSnapshot = accumulatedThinking;
-          const artifactSnapshot = [...runArtifactIds];
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: uid(),
-              role: "assistant",
-              content: accumulatedText,
-              thinking: thinkingSnapshot || undefined,
-              artifactIds: artifactSnapshot.length ? artifactSnapshot : undefined,
-            },
-          ]);
-          setStreamingText("");
-          setThinkingText("");
-        }
+        // Stream closed — source-of-truth is the backend. Refetch so any
+        // message the backend persisted (even one the SSE never delivered a
+        // `final_message` for) shows up immediately.
+        api.getSession(sessionId).then((d) => {
+          setSession(d.session);
+          setArtifacts(d.artifacts);
+          setMessages(
+            d.messages.map((m) => ({
+              id: m.id,
+              role: m.role as "user" | "assistant",
+              content: m.content,
+              artifactIds:
+                m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
+              thinking: m.thinking || undefined,
+            }))
+          );
+        }).catch(() => {});
+        setStreamingText("");
+        setThinkingText("");
         setIsStreaming(false);
       }
     );
@@ -190,8 +241,15 @@ export default function SessionPage() {
   useEffect(() => {
     api.getSession(sessionId).then((detail) => {
       setSession(detail.session);
+      if (detail.session.audience) setAudience(detail.session.audience);
       setMessages(
-        detail.messages.map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }))
+        detail.messages.map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          artifactIds: m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
+          thinking: m.thinking || undefined,
+        }))
       );
       setDocuments(detail.documents);
       setArtifacts(detail.artifacts);
@@ -207,8 +265,15 @@ export default function SessionPage() {
       const audParam = searchParams?.get("audience") as Audience | null;
       if (!didAttachInitial.current && promptParam) {
         didAttachInitial.current = true;
-        const chosenAud = audParam || audience;
+        // Explicit URL param takes priority; otherwise infer from the prompt
+        // text; otherwise fall back to the session's persisted audience.
+        const inferred = !audParam ? inferAudience(promptParam) : null;
+        const chosenAud = audParam || inferred || audience;
         if (audParam) setAudience(audParam);
+        else if (inferred && inferred !== audience) {
+          setAudience(inferred);
+          api.updateSession(sessionId, { audience: inferred }).catch(() => {});
+        }
         router.replace(`/sessions/${sessionId}`);
         setMessages((prev) => [...prev, { id: uid(), role: "user", content: promptParam, attachedDocs: detail.documents.map((d) => d.filename) }]);
         attachStream();
@@ -229,10 +294,19 @@ export default function SessionPage() {
 
   const handleSend = useCallback(async (text: string, attachedDocs: string[] = []) => {
     if (isStreaming) return;
+
+    // Auto-adjust audience if the prompt explicitly requests a different level.
+    const inferred = inferAudience(text);
+    const resolvedAudience = inferred ?? audience;
+    if (inferred && inferred !== audience) {
+      setAudience(inferred);
+      api.updateSession(sessionId, { audience: inferred }).catch(() => {});
+    }
+
     setMessages((prev) => [...prev, { id: uid(), role: "user", content: text, attachedDocs }]);
     attachStream();
     try {
-      await api.sendMessage(sessionId, text, audience);
+      await api.sendMessage(sessionId, text, resolvedAudience);
       // Refresh session so the auto-generated title shows up in both the
       // header and the sidebar without requiring a page reload.
       api.getSession(sessionId).then((d) => {
@@ -361,7 +435,14 @@ export default function SessionPage() {
             )}
           </div>
           <div className="absolute left-1/2 -translate-x-1/2">
-            <AudienceToggle value={audience} onChange={setAudience} />
+            <AudienceToggle
+              value={audience}
+              onChange={(next) => {
+                setAudience(next);
+                // Persist the user's choice so refresh / session switching keeps it.
+                api.updateSession(sessionId, { audience: next }).catch(() => {});
+              }}
+            />
           </div>
           <div className="ml-auto flex items-center gap-2">
             <SessionFiles

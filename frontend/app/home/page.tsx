@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Send, Plus, Upload as UploadIcon, X, FileText, Loader2, CheckCircle } from "lucide-react";
 import ChatSidebar from "@/components/ChatSidebar";
-import { api, type Audience, type Document } from "@/lib/api";
+import TokenCounter from "@/components/TokenCounter";
+import { api, type Audience, type Document, type TokenCount } from "@/lib/api";
 import AudienceToggle from "@/components/AudienceToggle";
 
 function greeting(hour: number): string {
@@ -29,8 +30,37 @@ export default function HomePage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [tokenCount, setTokenCount] = useState<TokenCount | null>(null);
+  const [countingTokens, setCountingTokens] = useState(false);
   const plusRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Debounced live token count. Uses the backend endpoint when a draft session
+  // exists (so uploaded-document tokens are included); otherwise falls back to
+  // a local ~4-chars-per-token estimate so users still see a number before
+  // uploading anything.
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      if (draftId) {
+        setCountingTokens(true);
+        api.countTokens(draftId, input)
+          .then((tc) => setTokenCount(tc))
+          .catch(() => {})
+          .finally(() => setCountingTokens(false));
+      } else {
+        // Local estimate: ~4 characters per token is Anthropic's own heuristic.
+        const promptTokens = Math.ceil(input.length / 4);
+        setTokenCount({
+          prompt_tokens: promptTokens,
+          base_tokens: 0,
+          total_tokens: promptTokens,
+          window: 200000,
+          percent: Math.round((promptTokens / 200000) * 1000) / 10,
+        });
+      }
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [input, draftId, pendingDocs.length]);
 
   useEffect(() => {
     setGreet(greeting(new Date().getHours()));
@@ -253,6 +283,15 @@ export default function HomePage() {
                   <span>{pendingDocs.length} ready</span>
                 </div>
               )}
+
+              {/* Live token counter — mirrors the session-page placement. */}
+              <div className="flex items-center justify-end pt-2 border-t border-[#2d3148]/50 mt-2">
+                <TokenCounter
+                  count={tokenCount}
+                  loading={countingTokens}
+                  hasDraft={input.trim().length > 0}
+                />
+              </div>
             </div>
           </div>
         </div>

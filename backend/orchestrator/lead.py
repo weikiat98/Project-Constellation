@@ -33,6 +33,13 @@ from backend.orchestrator.event_bus import SessionEventBus
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001") # change to claude-opus-4-6 for production and use claude-haiku-4-5-20251001 for testing
 WINDOW = 200_000
 
+# Advisor model — set to empty string to disable the advisor tool entirely
+# (useful for testing or strict cost control). When enabled, the Lead executor
+# consults this model up to 3 times per run: during planning, after subagent
+# synthesis, and before finalize.
+# Valid advisor model: claude-opus-4-7 (must be >= capability of executor).
+ADVISOR_MODEL = os.environ.get("ADVISOR_MODEL", "") # set to "claude-opus-4-7" to enable the advisor tool, or "" to disable it
+
 _LEAD_SYSTEM = """You are the Lead Orchestrator of Constellation, a multi-agent document analysis assistant.
 
 Your job is to answer the user's question about an uploaded document with maximum
@@ -51,8 +58,8 @@ accuracy, depth, and citation fidelity.
 
 ## Artifact formats
 `write_artifact` supports four formats via its `mime_type` parameter:
-  - `text/markdown` (default) — prose, headings, lists
-  - `text/plain` — unstyled plain text (.txt)
+  - `text/plain` — (default) unstyled plain text (.txt)
+  - `text/markdown` — prose, headings, lists 
   - `text/csv` — comma-separated tables (.csv)
   - `text/html` — rich HTML
 If the user asks to convert or re-emit an existing artifact in a different format
@@ -60,8 +67,15 @@ If the user asks to convert or re-emit an existing artifact in a different forma
 call `write_artifact` again with the same content reformatted and the requested
 `mime_type`. Do not refuse format conversions — it is a first-class capability.
 
-## Finalize contract (STRICT)
-The `result` field of `finalize` is the ONLY thing the user sees as a chat message.
+## Finalize contract (STRICT — this is how the turn ends)
+**Every turn MUST end with exactly one `finalize` tool call.** The `result`
+field of `finalize` is the ONLY thing the user sees as a chat message. If you
+stop emitting tool calls without calling `finalize`, the user sees nothing —
+this is a broken experience and a contract violation.
+
+Before you stop producing tool calls, always ask yourself: "have I called
+`finalize`?" If not, call it now with a substantive `result`.
+
 You MUST ALWAYS provide a substantive `result` — never an empty string, never a
 one-liner like "See the artifact above". It must NOT contain your planning,
 reasoning, or tool-call narration.
@@ -69,9 +83,9 @@ reasoning, or tool-call narration.
 ### When you called `write_artifact` this turn
 Write the `result` as a natural, conversational recap that introduces and frames
 the artifact for the user — the way a knowledgeable colleague would summarise a
-document they just handed you. Target 300–500 words. Good recap structure:
+document they just handed you. Target 300–600 words. Good recap structure:
 
-1. A short intro paragraph (2–4 sentences) that answers the user's question at a
+1. A short intro paragraph (2–5 sentences) that answers the user's question at a
    high level and names what you've prepared for them.
 2. A handful of themed sub-points — either short bold-labelled paragraphs (e.g.,
    "**Coverage:** …") or a mixed prose/bullet format — covering the 4–8 most
@@ -110,6 +124,21 @@ _AUDIENCE_INSTRUCTIONS = {
 }
 
 
+def _build_tools(use_advisor: bool) -> tuple[list[dict], list[str]]:
+    """Return (tools_list, betas) with or without the advisor tool appended."""
+    if not use_advisor:
+        return LEAD_TOOLS, []
+    advisor_tool = {
+        "type": "advisor_20260301",
+        "name": "advisor",
+        "model": ADVISOR_MODEL,
+        # 3 calls per run: planning check, post-synthesis review, pre-finalize
+        # quality gate. Matches the three natural decision points in the loop.
+        "max_uses": 3,
+    }
+    return LEAD_TOOLS + [advisor_tool], ["advisor-tool-2026-03-01"]
+
+
 async def run_lead(
     session_id: str,
     user_message: str,
@@ -125,6 +154,8 @@ async def run_lead(
     bus.publish("agent_spawned", agent_id=lead_run_id, role="lead_orchestrator", parent=None)
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    use_advisor = bool(ADVISOR_MODEL)
+    tools, betas = _build_tools(use_advisor)
 
     # Load document context
     docs = await get_documents(session_id)
@@ -165,8 +196,18 @@ async def run_lead(
     # prompt requires a real recap).
     artifacts_this_turn: list[dict] = []
 
+    # Shared kwargs for every API call — switches between beta and standard
+    # client depending on whether the advisor tool is active.
+    _system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+    _common: dict = dict(model=MODEL, max_tokens=64000, system=_system, tools=tools)
+    _stream_fn = (
+        lambda **kw: client.beta.messages.stream(**kw, betas=betas)
+        if use_advisor
+        else client.messages.stream(**kw)
+    )
+
     # Agentic loop
-    for _iteration in range(40):  # safety limit
+    for _ in range(40):  # safety limit
         # Check for compaction
         messages, compacted = await maybe_compact(messages, bus)
         if compacted:
@@ -181,19 +222,7 @@ async def run_lead(
             percent=round(est_tokens / WINDOW * 100, 1),
         )
 
-        async with client.messages.stream(
-            model=MODEL,
-            max_tokens=64000,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            tools=LEAD_TOOLS,
-            messages=messages,
-        ) as stream:
+        async with _stream_fn(**_common, messages=messages) as stream:
             # Lead prose between tool calls is planning/reasoning, not the
             # user-facing answer — stream it as `thinking_delta` so the UI can
             # route it into a separate "Thinking…" panel. The actual chat
@@ -204,6 +233,14 @@ async def run_lead(
 
         tokens_in += response.usage.input_tokens
         tokens_out += response.usage.output_tokens
+
+        # Accumulate advisor token usage (billed separately at advisor model rates).
+        # `iterations` is not in the typed SDK schema yet — access via getattr.
+        if use_advisor:
+            for iteration in getattr(response.usage, "iterations", None) or []:
+                if getattr(iteration, "type", None) == "advisor_message":
+                    tokens_in += getattr(iteration, "input_tokens", 0)
+                    tokens_out += getattr(iteration, "output_tokens", 0)
 
         if response.stop_reason == "end_turn":
             # The model ended the turn with plain text instead of calling
@@ -220,6 +257,23 @@ async def run_lead(
 
         if response.stop_reason != "tool_use":
             break
+
+        # ── Surface advisor guidance into the thinking panel ─────────────
+        # When the advisor tool fires, its result arrives as an
+        # `advisor_tool_result` block in response.content. The stream pauses
+        # silently during advisor sub-inference (no deltas), so we emit the
+        # advisor's text as a thinking_delta here so the user sees it.
+        if use_advisor:
+            for block in response.content:
+                if getattr(block, "type", None) == "advisor_tool_result":
+                    advisor_content = getattr(block, "content", None)
+                    advisor_text = getattr(advisor_content, "text", None) if advisor_content else None
+                    if advisor_text:
+                        bus.publish(
+                            "thinking_delta",
+                            agent_id=lead_run_id,
+                            delta=f"\n\n[Advisor] {advisor_text}",
+                        )
 
         # ── Handle tool calls ─────────────────────────────────────────────
         # Collect spawn_subagent calls to run in parallel
@@ -246,7 +300,7 @@ async def run_lead(
                 # left `result` empty or trivially short (< ~25 words), backfill
                 # a minimal message pointing at the artifact(s). The system
                 # prompt requires a full recap; this just prevents a silent UI.
-                if artifacts_this_turn and len(final_answer) < 150:
+                if artifacts_this_turn and len(final_answer) < 500:
                     names = ", ".join(a["name"] for a in artifacts_this_turn if a.get("name"))
                     fallback = (
                         f"I've prepared a detailed write-up in the generated file"
@@ -261,7 +315,16 @@ async def run_lead(
                 bus.publish("final_message", content=final_answer)
                 bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)
-                await add_message(session_id, "assistant", final_answer, tokens_in + tokens_out)
+                await add_message(
+                    session_id,
+                    "assistant",
+                    final_answer,
+                    tokens_in + tokens_out,
+                    artifact_ids=[
+                        a["artifact_id"] for a in artifacts_this_turn if a.get("artifact_id")
+                    ],
+                    thinking=bus.drain_thinking() or None,
+                )
                 return final_answer
 
             else:
@@ -323,15 +386,59 @@ async def run_lead(
         if other_tool_results:
             messages.append({"role": "user", "content": other_tool_results})
 
-    # If we exited the loop without finalize, use last text as answer
+    # ── Loop exited without `finalize` ───────────────────────────────────
+    # Three recovery tiers, in priority order:
+    #   1. Scrape any text blocks from the last response (model ended with
+    #      a text answer but forgot to call finalize).
+    #   2. If artifacts were produced this turn, backfill a readable recap
+    #      pointing the user at them so the UI never shows an empty bubble.
+    #   3. Last resort: honest error message. Never persist an empty string.
+    # Check block.type explicitly — beta response content includes non-text
+    # block types (server_tool_use, advisor_tool_result, etc.) that don't
+    # carry a .text attribute.
     if not final_answer:
         for block in response.content if response else []:
-            if hasattr(block, "text"):
+            if getattr(block, "type", None) == "text":
                 final_answer += block.text
+        final_answer = final_answer.strip()
+
+    if not final_answer and artifacts_this_turn:
+        # Same shape as the `finalize`-branch fallback, but worded to reflect
+        # that the model skipped the recap entirely rather than providing a
+        # thin one. This branch fires when the loop runs out of iterations or
+        # the model returns tool_use without ever calling finalize.
+        names = ", ".join(a["name"] for a in artifacts_this_turn if a.get("name"))
+        plural = "s" if len(artifacts_this_turn) > 1 else ""
+        final_answer = (
+            f"I've prepared the requested write-up in the generated file{plural}"
+            f"{': ' + names if names else '.'} "
+            f"Open {'them' if plural else 'it'} above to see the full breakdown. "
+            f"Ask a follow-up question if you'd like me to expand on any section "
+            f"or walk through specific findings in more detail."
+        )
+
+    if not final_answer:
+        # No text, no artifacts — the run truly produced nothing user-visible.
+        # Tell the user explicitly rather than silently persisting an empty
+        # bubble they have to refresh to notice.
+        final_answer = (
+            "I wasn't able to produce a final answer for this turn — the agents "
+            "ran but didn't return a response. Please try rephrasing your "
+            "question, or click Retry on this message to run it again."
+        )
 
     bus.publish("final_message", content=final_answer)
     bus.publish("run_complete", final=final_answer[:300])
     await finish_agent_run(lead_run_id, tokens_in, tokens_out)
-    await add_message(session_id, "assistant", final_answer, tokens_in + tokens_out)
+    await add_message(
+        session_id,
+        "assistant",
+        final_answer,
+        tokens_in + tokens_out,
+        artifact_ids=[
+            a["artifact_id"] for a in artifacts_this_turn if a.get("artifact_id")
+        ],
+        thinking=bus.drain_thinking() or None,
+    )
 
     return final_answer

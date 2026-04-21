@@ -18,6 +18,9 @@ class SessionCreate(BaseModel):
 class SessionUpdate(BaseModel):
     title: Optional[str] = None
     pinned: Optional[bool] = None
+    audience: Optional[str] = Field(
+        default=None, pattern="^(layperson|professional|expert)$"
+    )
 
 
 class SessionOut(BaseModel):
@@ -25,6 +28,7 @@ class SessionOut(BaseModel):
     title: Optional[str]
     created_at: datetime
     pinned: bool = False
+    audience: str = "professional"
 
     model_config = {"from_attributes": True}
 
@@ -43,6 +47,8 @@ class MessageOut(BaseModel):
     content: str
     token_usage: Optional[int]
     created_at: datetime
+    artifact_ids: list[str] = Field(default_factory=list)
+    thinking: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -122,6 +128,20 @@ class ContextUsageOut(BaseModel):
     tokens: int
     window: int
     percent: float
+
+
+# ─── Token counting ──────────────────────────────────────────────────────────
+
+class TokenCountRequest(BaseModel):
+    content: str = ""  # draft prompt text; empty counts just the base payload
+
+
+class TokenCountOut(BaseModel):
+    prompt_tokens: int        # tokens from the draft message alone
+    base_tokens: int          # system prompt + tools + doc index + chat history
+    total_tokens: int         # prompt_tokens + base_tokens
+    window: int               # 200000
+    percent: float            # total_tokens / window * 100
 
 
 # ─── SSE event envelopes (for typing on the frontend) ────────────────────────

@@ -40,15 +40,18 @@ _DDL_STATEMENTS = [
         id          TEXT PRIMARY KEY,
         title       TEXT,
         created_at  TEXT NOT NULL,
-        pinned      INTEGER NOT NULL DEFAULT 0
+        pinned      INTEGER NOT NULL DEFAULT 0,
+        audience    TEXT NOT NULL DEFAULT 'professional'
     )""",
     """CREATE TABLE IF NOT EXISTS messages (
-        id          TEXT PRIMARY KEY,
-        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        role        TEXT NOT NULL,
-        content     TEXT NOT NULL,
-        token_usage INTEGER,
-        created_at  TEXT NOT NULL
+        id               TEXT PRIMARY KEY,
+        session_id       TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        role             TEXT NOT NULL,
+        content          TEXT NOT NULL,
+        token_usage      INTEGER,
+        created_at       TEXT NOT NULL,
+        artifact_ids_json TEXT,
+        thinking         TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS documents (
         id                TEXT PRIMARY KEY,
@@ -137,12 +140,23 @@ async def _init_db(db: aiosqlite.Connection) -> None:
     cols = [r[1] for r in await cursor.fetchall()]
     if "pinned" not in cols:
         await db.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+    if "audience" not in cols:
+        await db.execute(
+            "ALTER TABLE sessions ADD COLUMN audience TEXT NOT NULL DEFAULT 'professional'"
+        )
     # Migration: ensure documents has original_filename (falls back to filename).
     cursor = await db.execute("PRAGMA table_info(documents)")
     doc_cols = [r[1] for r in await cursor.fetchall()]
     if "original_filename" not in doc_cols:
         await db.execute("ALTER TABLE documents ADD COLUMN original_filename TEXT")
         await db.execute("UPDATE documents SET original_filename = filename WHERE original_filename IS NULL")
+    # Migration: per-message artifact linkage + persisted thinking trace.
+    cursor = await db.execute("PRAGMA table_info(messages)")
+    msg_cols = [r[1] for r in await cursor.fetchall()]
+    if "artifact_ids_json" not in msg_cols:
+        await db.execute("ALTER TABLE messages ADD COLUMN artifact_ids_json TEXT")
+    if "thinking" not in msg_cols:
+        await db.execute("ALTER TABLE messages ADD COLUMN thinking TEXT")
     await db.commit()
     _db_initialised = True
 
@@ -171,11 +185,18 @@ async def create_session(title: Optional[str] = None) -> dict:
     now = _now()
     async with get_db() as db:
         await db.execute(
-            "INSERT INTO sessions (id, title, created_at, pinned) VALUES (?, ?, ?, 0)",
+            "INSERT INTO sessions (id, title, created_at, pinned, audience) "
+            "VALUES (?, ?, ?, 0, 'professional')",
             (sid, title, now),
         )
         await db.commit()
-    return {"id": sid, "title": title, "created_at": now, "pinned": False}
+    return {
+        "id": sid,
+        "title": title,
+        "created_at": now,
+        "pinned": False,
+        "audience": "professional",
+    }
 
 
 async def get_session(session_id: str) -> Optional[dict]:
@@ -186,6 +207,7 @@ async def get_session(session_id: str) -> Optional[dict]:
         return None
     data = dict(row)
     data["pinned"] = bool(data.get("pinned", 0))
+    data["audience"] = data.get("audience") or "professional"
     return data
 
 
@@ -198,6 +220,7 @@ async def list_sessions() -> list[dict]:
     for r in rows:
         d = dict(r)
         d["pinned"] = bool(d.get("pinned", 0))
+        d["audience"] = d.get("audience") or "professional"
         out.append(d)
     return out
 
@@ -206,8 +229,9 @@ async def update_session(
     session_id: str,
     title: Optional[str] = None,
     pinned: Optional[bool] = None,
+    audience: Optional[str] = None,
 ) -> Optional[dict]:
-    """Update title and/or pinned flag. Returns refreshed session row or None."""
+    """Update title, pinned flag, and/or audience. Returns refreshed session row or None."""
     sets: list[str] = []
     vals: list = []
     if title is not None:
@@ -216,6 +240,9 @@ async def update_session(
     if pinned is not None:
         sets.append("pinned = ?")
         vals.append(1 if pinned else 0)
+    if audience is not None:
+        sets.append("audience = ?")
+        vals.append(audience)
     if not sets:
         return await get_session(session_id)
     vals.append(session_id)
@@ -264,15 +291,22 @@ async def delete_messages_after(session_id: str, message_id: str) -> int:
 # ─── Messages ────────────────────────────────────────────────────────────────
 
 async def add_message(
-    session_id: str, role: str, content: str, token_usage: Optional[int] = None
+    session_id: str,
+    role: str,
+    content: str,
+    token_usage: Optional[int] = None,
+    artifact_ids: Optional[list[str]] = None,
+    thinking: Optional[str] = None,
 ) -> dict:
     mid = str(uuid.uuid4())
     now = _now()
+    artifact_blob = json.dumps(artifact_ids) if artifact_ids else None
     async with get_db() as db:
         await db.execute(
-            "INSERT INTO messages (id, session_id, role, content, token_usage, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (mid, session_id, role, content, token_usage, now),
+            "INSERT INTO messages "
+            "(id, session_id, role, content, token_usage, created_at, artifact_ids_json, thinking) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (mid, session_id, role, content, token_usage, now, artifact_blob, thinking),
         )
         await db.commit()
     return {
@@ -282,6 +316,8 @@ async def add_message(
         "content": content,
         "token_usage": token_usage,
         "created_at": now,
+        "artifact_ids": list(artifact_ids) if artifact_ids else [],
+        "thinking": thinking,
     }
 
 
@@ -291,7 +327,18 @@ async def get_messages(session_id: str) -> list[dict]:
             "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
             (session_id,),
         )
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw = d.pop("artifact_ids_json", None)
+        try:
+            d["artifact_ids"] = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            d["artifact_ids"] = []
+        # `thinking` may already be present from SELECT *; normalize None → None.
+        d["thinking"] = d.get("thinking")
+        out.append(d)
+    return out
 
 
 # ─── Documents / chunks ──────────────────────────────────────────────────────

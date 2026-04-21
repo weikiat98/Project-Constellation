@@ -40,6 +40,9 @@ class SessionEventBus:
         self._session_id = session_id
         self._run_index = run_index
         self._seq = 0
+        # Running buffer of all thinking_delta text for the current run, so the
+        # lead can persist it onto the assistant message when the run finishes.
+        self._thinking_buffer: list[str] = []
 
     def bind_persistence(self, session_id: str, run_index: int) -> None:
         """Attach a session/run so persisted events land in the right bucket."""
@@ -56,6 +59,16 @@ class SessionEventBus:
             self._queue.put_nowait(payload)
         except asyncio.QueueFull:
             pass  # drop if consumer is too slow
+
+        # Mirror thinking deltas into a buffer so the orchestrator can persist
+        # the full reasoning stream with the assistant message. `thinking_clear`
+        # drops what's accumulated (model ended turn without `finalize`).
+        if event_type == "thinking_delta":
+            delta = data.get("delta")
+            if isinstance(delta, str):
+                self._thinking_buffer.append(delta)
+        elif event_type == "thinking_clear":
+            self._thinking_buffer.clear()
 
         # Persist trace-relevant events so they survive reloads.
         if (
@@ -82,6 +95,12 @@ class SessionEventBus:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    def drain_thinking(self) -> str:
+        """Return the accumulated thinking text and clear the buffer."""
+        text = "".join(self._thinking_buffer)
+        self._thinking_buffer.clear()
+        return text
 
     async def consume(self) -> AsyncGenerator[str, None]:
         """Async generator yielding SSE-formatted strings."""

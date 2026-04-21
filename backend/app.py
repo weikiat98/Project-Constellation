@@ -35,10 +35,14 @@ from backend.models import (
     SessionDetail,
     SessionOut,
     SessionUpdate,
+    TokenCountOut,
+    TokenCountRequest,
 )
 from backend.orchestrator.compactor import WINDOW, _count_tokens_approx
 from backend.orchestrator.event_bus import event_registry
-from backend.orchestrator.lead import run_lead
+from backend.orchestrator.lead import MODEL, run_lead
+from backend.orchestrator.tools import LEAD_TOOLS
+import anthropic
 from backend.store.documents import DocumentStore
 from backend.store.sessions import (
     add_message,
@@ -47,6 +51,7 @@ from backend.store.sessions import (
     delete_session,
     get_artifact,
     get_artifacts,
+    get_chunks_for_document,
     get_documents,
     get_messages,
     get_session,
@@ -91,7 +96,9 @@ async def patch_session_endpoint(session_id: str, body: SessionUpdate):
     session = await get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
-    updated = await update_session(session_id, title=body.title, pinned=body.pinned)
+    updated = await update_session(
+        session_id, title=body.title, pinned=body.pinned, audience=body.audience
+    )
     return updated
 
 
@@ -196,6 +203,10 @@ async def submit_message(session_id: str, body: MessageCreate):
         if len(user_msgs) == 1:
             await update_session(session_id, title=_derive_title(body.content))
 
+    # Persist the audience on the session so refreshes see the user's last choice.
+    if body.audience and body.audience != session.get("audience"):
+        await update_session(session_id, audience=body.audience)
+
     # Get a LIVE SSE bus — replaces any closed-out bus from a prior run.
     bus = event_registry.ensure_live(session_id)
     run_index = await next_trace_run_index(session_id)
@@ -259,6 +270,89 @@ async def get_context(session_id: str):
         tokens=tokens,
         window=WINDOW,
         percent=round(tokens / WINDOW * 100, 1),
+    )
+
+
+@app.post("/api/sessions/{session_id}/count_tokens", response_model=TokenCountOut)
+async def count_tokens(session_id: str, body: TokenCountRequest):
+    """
+    Count the tokens the next turn will consume if the user sends `content` now.
+
+    Mirrors what the Lead orchestrator assembles — system prompt, tool
+    definitions, the ~50-chunk document index, persisted chat history, and the
+    draft prompt — and calls Anthropic's free `count_tokens` endpoint.
+
+    Accuracy note: the result is an estimate. The actual call may differ by a
+    few tokens due to system-added tokens Anthropic inserts internally.
+    """
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    # Build the doc index the Lead injects at the start of every run.
+    docs = await get_documents(session_id)
+    doc_context_parts: list[str] = []
+    for doc in docs:
+        chunks = await get_chunks_for_document(doc["id"])
+        chunk_lines = []
+        for c in chunks[:50]:
+            section = f" [§{c['section_id']}]" if c.get("section_id") else ""
+            page = f" p.{c['page']}" if c.get("page") else ""
+            preview = c["content"][:120].replace("\n", " ")
+            chunk_lines.append(f"  chunk_id={c['id']}{section}{page}: {preview}…")
+        doc_context_parts.append(
+            f"Document: {doc['filename']} ({doc['chunk_count']} chunks)\n"
+            + "\n".join(chunk_lines)
+        )
+    doc_context = (
+        "\n\n".join(doc_context_parts) if doc_context_parts else "No documents uploaded yet."
+    )
+
+    # Rebuild the message array: existing history + a synthetic new user turn
+    # with the Lead's doc-index wrapper. We count with and without the draft
+    # content to give the UI a prompt-only split.
+    history = await get_messages(session_id)
+    base_messages = [
+        {"role": m["role"], "content": m["content"]} for m in history
+    ]
+
+    wrapped_template = "## Document Index\n{ctx}\n\n## User Question\n{q}"
+    base_wrapped = wrapped_template.format(ctx=doc_context, q="")
+    full_wrapped = wrapped_template.format(ctx=doc_context, q=body.content)
+
+    system_prompt_placeholder = (
+        "You are the Lead Orchestrator of Constellation, a multi-agent document "
+        "analysis assistant. [system prompt truncated for counting]"
+    )
+
+    client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+    async def _count(msgs: list[dict]) -> int:
+        try:
+            resp = await client.messages.count_tokens(
+                model=MODEL,
+                system=system_prompt_placeholder,
+                tools=LEAD_TOOLS,
+                messages=msgs,
+            )
+            return int(resp.input_tokens)
+        except Exception:
+            # Fall back to the in-house approximation so the UI never breaks.
+            return _count_tokens_approx(msgs)
+
+    base_msgs = base_messages + [{"role": "user", "content": base_wrapped}]
+    full_msgs = base_messages + [{"role": "user", "content": full_wrapped}]
+
+    base_total = await _count(base_msgs)
+    full_total = base_total if not body.content else await _count(full_msgs)
+    prompt_tokens = max(0, full_total - base_total)
+
+    return TokenCountOut(
+        prompt_tokens=prompt_tokens,
+        base_tokens=base_total,
+        total_tokens=full_total,
+        window=WINDOW,
+        percent=round(full_total / WINDOW * 100, 1),
     )
 
 

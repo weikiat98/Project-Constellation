@@ -198,6 +198,7 @@ interface Props {
   onArtifactPreview?: (artifact: Artifact) => void;
   onRetry?: (assistantMessageId: string) => void;
   onEdit?: (userMessageId: string, newContent: string) => void;
+  onDropFile?: (file: File) => void;
 
   // Context meter
   liveContextPercent?: number;
@@ -251,6 +252,7 @@ export default function ChatPane({
   onArtifactPreview,
   onRetry,
   onEdit,
+  onDropFile,
   liveContextPercent,
   onCompact,
   compacting,
@@ -263,6 +265,7 @@ export default function ChatPane({
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const [tokenCount, setTokenCount] = useState<TokenCount | null>(null);
   const [countingTokens, setCountingTokens] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -476,8 +479,25 @@ export default function ChatPane({
       <AgentTracePanel entries={traceEntries} streaming={isStreaming} />
 
       {/* Input bar */}
-      <div className="px-4 pt-3 pb-4 border-t border-[#2d3148] bg-[#0f1117]">
-        <div className="bg-[#1a1d27] rounded-xl border border-[#2d3148] px-3 py-2 focus-within:border-blue-500/40 transition">
+      <div
+        className="px-4 pt-3 pb-4 border-t border-[#2d3148] bg-[#0f1117]"
+        onDragOver={(e) => {
+          if (!onDropFile) return;
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          if (!onDropFile) return;
+          e.preventDefault();
+          setDragOver(false);
+          const file = e.dataTransfer.files[0];
+          if (file) onDropFile(file);
+        }}
+      >
+        <div className={`bg-[#1a1d27] rounded-xl border px-3 py-2 focus-within:border-blue-500/40 transition ${
+          dragOver ? "border-blue-500 bg-blue-500/10" : "border-[#2d3148]"
+        }`}>
           <div className="flex items-end gap-2">
             {/* + button with popover */}
             <div className="relative" ref={plusRef}>

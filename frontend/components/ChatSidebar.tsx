@@ -138,6 +138,7 @@ export default function ChatSidebar({ activeSessionId, defaultOpen = true }: Pro
           onClick={() => router.push("/home")}
           className="flex items-center gap-2 text-slate-200 hover:text-white transition"
           title="Home"
+          suppressHydrationWarning
         >
           <BookOpen className="w-4 h-4 text-blue-400" />
           <span className="text-sm font-semibold">Constellation</span>

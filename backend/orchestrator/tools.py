@@ -156,9 +156,9 @@ LEAD_TOOLS: list[dict] = [
                 },
                 "mime_type": {
                     "type": "string",
-                    "description": "MIME type: 'text/markdown', 'text/html', 'text/csv', or 'text/plain'.",
-                    "enum": ["text/markdown", "text/html", "text/csv", "text/plain"],
-                    "default": "text/markdown",
+                    "description": "MIME type: 'text/plain' (default), 'text/markdown', 'text/html', or 'text/csv'.",
+                    "enum": ["text/plain", "text/markdown", "text/html", "text/csv"],
+                    "default": "text/plain",
                 },
                 "citations": {
                     "type": "array",

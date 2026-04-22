@@ -122,6 +122,9 @@ export default function SessionPage() {
     // the files generated for that specific user query (not every artifact
     // in the session).
     const runArtifactIds: string[] = [];
+    // Artifact IDs pending canvas preview — buffered until final_message fires
+    // so the recap text is visible to the user before the canvas opens.
+    const pendingPreviewArtifactId: { id: string | null } = { id: null };
 
     const unsubscribe = subscribeToStream(
       sessionId,
@@ -148,6 +151,17 @@ export default function SessionPage() {
           case "final_message":
             accumulatedText = event.content;
             setStreamingText(event.content);
+            // Now that the recap text is set, open the canvas for any artifact
+            // that arrived earlier this turn (artifact_written fires before finalize).
+            if (pendingPreviewArtifactId.id) {
+              const artifactId = pendingPreviewArtifactId.id;
+              pendingPreviewArtifactId.id = null;
+              api.getSession(sessionId).then((d) => {
+                setArtifacts(d.artifacts);
+                const newest = d.artifacts.find((a) => a.id === artifactId);
+                if (newest) setPreviewArtifact(newest);
+              }).catch(() => {});
+            }
             break;
           case "agent_spawned":
             setTraceEntries((p) => [...p, { id: uid(), type: "agent_spawned", timestamp: Date.now(), agent_id: event.agent_id, role: event.role }]);
@@ -158,12 +172,9 @@ export default function SessionPage() {
           case "artifact_written":
             runArtifactIds.push(event.artifact_id);
             setTraceEntries((p) => [...p, { id: uid(), type: "artifact_written", timestamp: Date.now(), artifact_id: event.artifact_id, artifact_name: event.name }]);
-            // Reload artifacts list and auto-open the newest in the canvas.
-            api.getSession(sessionId).then((d) => {
-              setArtifacts(d.artifacts);
-              const newest = d.artifacts.find((a) => a.id === event.artifact_id);
-              if (newest) setPreviewArtifact(newest);
-            }).catch(() => {});
+            // Buffer the artifact ID — canvas preview is deferred until
+            // final_message fires so the recap text appears first.
+            pendingPreviewArtifactId.id = event.artifact_id;
             break;
           case "agent_done":
             setTraceEntries((p) => [...p, { id: uid(), type: "agent_done", timestamp: Date.now(), agent_id: event.agent_id, summary: event.summary }]);
@@ -179,26 +190,51 @@ export default function SessionPage() {
             // IDs and thinking trace). Refetch authoritative state instead of
             // relying on in-stream accumulators — this also repairs races
             // where `final_message` was empty or arrived out of order.
-            api.getSession(sessionId).then((d) => {
-              setSession(d.session);
-              setArtifacts(d.artifacts);
-              setMessages(
-                d.messages.map((m) => ({
-                  id: m.id,
-                  role: m.role as "user" | "assistant",
-                  content: m.content,
-                  artifactIds:
-                    m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
-                  thinking: m.thinking || undefined,
-                }))
+            //
+            // Delay the streaming→committed swap so the client-side typewriter
+            // has time to reveal the recap character-by-character. Estimate at
+            // ~3ms/char (TYPEWRITER_INTERVAL_MS / TYPEWRITER_CHARS_PER_TICK)
+            // with a floor of 400ms and cap of 6s so very long recaps still
+            // finalize within a reasonable time.
+            {
+              const pendingId = pendingPreviewArtifactId.id;
+              pendingPreviewArtifactId.id = null;
+              const typewriterDelayMs = Math.min(
+                10000,
+                Math.max(400, Math.ceil(accumulatedText.length * 3))
               );
-            }).catch(() => {});
+              const sessionData = api.getSession(sessionId);
+              window.setTimeout(() => {
+                sessionData.then((d) => {
+                  setSession(d.session);
+                  setArtifacts(d.artifacts);
+                  setMessages(
+                    d.messages.map((m) => ({
+                      id: m.id,
+                      role: m.role as "user" | "assistant",
+                      content: m.content,
+                      artifactIds:
+                        m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
+                      thinking: m.thinking || undefined,
+                    }))
+                  );
+                  if (pendingId) {
+                    const newest = d.artifacts.find((a) => a.id === pendingId);
+                    if (newest) setPreviewArtifact(newest);
+                  }
+                  setStreamingText("");
+                  setThinkingText("");
+                  setIsStreaming(false);
+                }).catch(() => {
+                  setStreamingText("");
+                  setThinkingText("");
+                  setIsStreaming(false);
+                });
+              }, typewriterDelayMs);
+            }
             accumulatedText = "";
             accumulatedThinking = "";
             runArtifactIds.length = 0;
-            setStreamingText("");
-            setThinkingText("");
-            setIsStreaming(false);
             break;
           case "error":
             setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);

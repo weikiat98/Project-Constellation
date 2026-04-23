@@ -36,6 +36,45 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const CITATION_RE = new RegExp(`\\[(${UUID}(?:\\s*[,;]\\s*${UUID})*)\\]`, "g");
 const UUID_RE = new RegExp(UUID, "g");
 
+// Typewriter reveal: `final_message` arrives as a single complete string, so we
+// animate it character-by-character on the client for a streamed feel. Chunk
+// size + interval tuned to finish a ~500-word recap in ~4s without feeling slow.
+const TYPEWRITER_CHARS_PER_TICK = 6;
+const TYPEWRITER_INTERVAL_MS = 16;
+
+function useTypewriter(target: string, enabled: boolean): string {
+  const [displayed, setDisplayed] = useState("");
+  const prevTargetRef = useRef("");
+
+  useEffect(() => {
+    if (!enabled) {
+      // Not streaming — snap to full text so finalized messages aren't animated.
+      setDisplayed(target);
+      prevTargetRef.current = target;
+      return;
+    }
+    // If target shrank (new stream starting) or is empty, reset.
+    if (!target.startsWith(prevTargetRef.current)) {
+      setDisplayed("");
+    }
+    prevTargetRef.current = target;
+  }, [target, enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (displayed.length >= target.length) return;
+    const handle = window.setInterval(() => {
+      setDisplayed((prev) => {
+        if (prev.length >= target.length) return prev;
+        return target.slice(0, prev.length + TYPEWRITER_CHARS_PER_TICK);
+      });
+    }, TYPEWRITER_INTERVAL_MS);
+    return () => window.clearInterval(handle);
+  }, [target, displayed.length, enabled]);
+
+  return displayed;
+}
+
 // Context passed through markdown rendering so a text node knows how to decorate
 // itself: citations (always) + search highlights (when a query is active).
 interface RenderContext {
@@ -198,6 +237,7 @@ interface Props {
   onArtifactPreview?: (artifact: Artifact) => void;
   onRetry?: (assistantMessageId: string) => void;
   onEdit?: (userMessageId: string, newContent: string) => void;
+  onDropFile?: (file: File) => void;
 
   // Context meter
   liveContextPercent?: number;
@@ -251,6 +291,7 @@ export default function ChatPane({
   onArtifactPreview,
   onRetry,
   onEdit,
+  onDropFile,
   liveContextPercent,
   onCompact,
   compacting,
@@ -263,9 +304,14 @@ export default function ChatPane({
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const [tokenCount, setTokenCount] = useState<TokenCount | null>(null);
   const [countingTokens, setCountingTokens] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+
+  // Progressively reveal the recap. The backend sends `final_message` as one
+  // complete string, so animate it client-side for a smooth streamed feel.
+  const typedStreamingText = useTypewriter(streamingText, isStreaming);
 
   // Debounced token-count fetch: recomputes ~400ms after the user stops typing,
   // also refreshes when the document set changes (new upload → larger base).
@@ -429,7 +475,7 @@ export default function ChatPane({
             </div>
             <div className="flex-1 min-w-0 space-y-3">
               {/* Live thinking panel (collapsible) — visible while agents work. */}
-              {(thinkingText || !streamingText) && (
+              {(thinkingText || !typedStreamingText) && (
                 <ThinkingPanel
                   text={thinkingText}
                   live
@@ -437,7 +483,7 @@ export default function ChatPane({
                 />
               )}
 
-              {streamingText ? (
+              {typedStreamingText ? (
                 <div className="text-sm leading-relaxed text-slate-200">
                   <div className="prose prose-sm prose-invert max-w-none">
                     <ReactMarkdown
@@ -450,7 +496,7 @@ export default function ChatPane({
                         currentMatchIndex: -1,
                       })}
                     >
-                      {streamingText}
+                      {typedStreamingText}
                     </ReactMarkdown>
                   </div>
                   <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom" />
@@ -476,8 +522,25 @@ export default function ChatPane({
       <AgentTracePanel entries={traceEntries} streaming={isStreaming} />
 
       {/* Input bar */}
-      <div className="px-4 pt-3 pb-4 border-t border-[#2d3148] bg-[#0f1117]">
-        <div className="bg-[#1a1d27] rounded-xl border border-[#2d3148] px-3 py-2 focus-within:border-blue-500/40 transition">
+      <div
+        className="px-4 pt-3 pb-4 border-t border-[#2d3148] bg-[#0f1117]"
+        onDragOver={(e) => {
+          if (!onDropFile) return;
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          if (!onDropFile) return;
+          e.preventDefault();
+          setDragOver(false);
+          const file = e.dataTransfer.files[0];
+          if (file) onDropFile(file);
+        }}
+      >
+        <div className={`bg-[#1a1d27] rounded-xl border px-3 py-2 focus-within:border-blue-500/40 transition ${
+          dragOver ? "border-blue-500 bg-blue-500/10" : "border-[#2d3148]"
+        }`}>
           <div className="flex items-end gap-2">
             {/* + button with popover */}
             <div className="relative" ref={plusRef}>

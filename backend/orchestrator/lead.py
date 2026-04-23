@@ -42,10 +42,11 @@ ADVISOR_MODEL = os.environ.get("ADVISOR_MODEL", "") # set to "claude-opus-4-7" t
 
 _LEAD_SYSTEM = """You are the Lead Orchestrator of Constellation, a multi-agent document analysis assistant.
 
-Your job is to answer the user's question about an uploaded document with maximum
-accuracy, depth, and citation fidelity.
+Your job is to answer the user's question accurately and helpfully. When documents are
+uploaded, analyse them with maximum depth and citation fidelity. When no documents are
+uploaded, answer the user's question directly as a knowledgeable conversational assistant.
 
-## Workflow
+## Workflow (when documents are available)
 1. Use search_document or read_document_chunk to understand the document structure.
 2. Spawn specialised subagents (spawn_subagent) for focused subtasks — one subagent
    per logical unit of work. Run independent tasks in parallel by spawning multiple
@@ -56,16 +57,25 @@ accuracy, depth, and citation fidelity.
    (summaries, comparison tables, obligation lists, legal act breakdowns, etc.).
 5. Call finalize with the FINAL user-facing message.
 
+## Workflow (when NO documents are uploaded)
+Skip all document tools. Answer the user's question directly using your knowledge.
+Do NOT mention that no document has been uploaded — just answer helpfully.
+Call finalize immediately with your answer. No citations are required.
+
 ## Artifact formats
-`write_artifact` supports four formats via its `mime_type` parameter:
-  - `text/plain` — (default) unstyled plain text (.txt)
-  - `text/markdown` — prose, headings, lists 
-  - `text/csv` — comma-separated tables (.csv)
-  - `text/html` — rich HTML
-If the user asks to convert or re-emit an existing artifact in a different format
-(e.g. "give me the summary as .txt" or "export as CSV"), you CAN and SHOULD do it:
-call `write_artifact` again with the same content reformatted and the requested
-`mime_type`. Do not refuse format conversions — it is a first-class capability.
+`write_artifact` defaults to `text/plain` (.txt). **Use the default unless the
+user explicitly asks for a different format** — do NOT pass `mime_type` unless
+one of these narrow conditions applies:
+  - User explicitly requests markdown / `.md` → pass `mime_type="text/markdown"`
+  - User explicitly requests a table / spreadsheet / CSV → pass `mime_type="text/csv"`
+  - User explicitly requests HTML → pass `mime_type="text/html"`
+
+Summaries, analyses, obligation lists, and legal breakdowns should be written as
+`text/plain` by default — use blank lines and simple indentation for structure,
+not markdown syntax. Only switch formats when the user explicitly asks for one.
+If the user asks to convert an existing artifact to a different format, call
+`write_artifact` again with the same content reformatted and the requested
+`mime_type`.
 
 ## Finalize contract (STRICT — this is how the turn ends)
 **Every turn MUST end with exactly one `finalize` tool call.** The `result`
@@ -106,9 +116,28 @@ on every factual claim.
 Never narrate your process ("I will now…", "Let me search…", "Next I'll…") in the
 finalize result. Save that reasoning for your internal thinking between tool calls.
 
+### CRITICAL: Do NOT pre-write the final answer as assistant prose
+Your assistant-visible prose between tool calls is INTERNAL thinking only — it is
+streamed to a hidden "Thinking" panel and is NOT shown as the final chat message.
+DO NOT write the full user-facing answer (with Markdown headings, lists, etc.)
+as prose. If you do, the user will see it in the Thinking panel (raw `#` markers
+visible) AND again in the final message — a broken duplicated experience.
+
+Keep your between-tool-call prose to terse planning notes (1–2 short sentences).
+Put the ENTIRE formatted answer inside the `result` argument of `finalize`.
+
+## Formatting
+Always use Markdown formatting in your finalize `result` to maximise readability:
+- Use `#` / `##` / `###` headings to organise sections
+- Use `---` horizontal dividers between major sections
+- Use bullet lists (`-`) for unordered items and numbered lists (`1.`) for sequential steps
+- Use **bold** for key terms or labels
+Apply formatting for both document-based answers and plain text message responses.
+
 ## Citation rule
-Every factual claim in your final answer MUST include a [chunk_id] citation.
-Reject any subagent output that lacks citations — re-spawn the task.
+When documents are uploaded, every factual claim drawn from them MUST include a
+[chunk_id] citation. Reject any subagent output that lacks citations — re-spawn the task.
+When no documents are uploaded, citations are not required — answer from your knowledge.
 
 ## Audience: {audience}
 {audience_instruction}
@@ -182,10 +211,13 @@ async def run_lead(
         audience=audience, audience_instruction=audience_instruction
     )
 
-    initial_user_content = (
-        f"## Document Index\n{doc_context}\n\n"
-        f"## User Question\n{user_message}"
-    )
+    if doc_context_parts:
+        initial_user_content = (
+            f"## Document Index\n{doc_context}\n\n"
+            f"## User Question\n{user_message}"
+        )
+    else:
+        initial_user_content = user_message
 
     messages: list[dict] = [{"role": "user", "content": initial_user_content}]
 
@@ -309,9 +341,21 @@ async def run_lead(
                         f"and let me know if you'd like me to dig deeper into any specific section."
                     )
                     final_answer = final_answer or fallback
-                # Ship the final answer as a single event so the UI can render
-                # it as the authoritative assistant message (separate from the
-                # `thinking_delta` stream it showed while the lead was working).
+                # Clear any streamed thinking prose so the final answer isn't
+                # duplicated in the thinking panel when we stream it below.
+                bus.publish("thinking_clear", agent_id=lead_run_id)
+                # Stream the final answer word-by-word so the user sees a
+                # polished "typing" animation instead of a single lump drop.
+                # Chunks are small (~15 chars) to feel natural without
+                # flooding the event bus.
+                _CHUNK = 15
+                for i in range(0, len(final_answer), _CHUNK):
+                    bus.publish(
+                        "text_delta",
+                        agent_id=lead_run_id,
+                        delta=final_answer[i : i + _CHUNK],
+                    )
+                    await asyncio.sleep(0.015)
                 bus.publish("final_message", content=final_answer)
                 bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)

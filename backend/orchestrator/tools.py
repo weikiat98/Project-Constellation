@@ -156,9 +156,9 @@ LEAD_TOOLS: list[dict] = [
                 },
                 "mime_type": {
                     "type": "string",
-                    "description": "MIME type: 'text/markdown', 'text/html', 'text/csv', or 'text/plain'.",
-                    "enum": ["text/markdown", "text/html", "text/csv", "text/plain"],
-                    "default": "text/markdown",
+                    "description": "MIME type: 'text/plain' (default), 'text/markdown', 'text/html', or 'text/csv'. Use 'text/plain' unless the user explicitly requests a different format.",
+                    "enum": ["text/plain", "text/markdown", "text/html", "text/csv"],
+                    "default": "text/plain",
                 },
                 "citations": {
                     "type": "array",
@@ -258,7 +258,7 @@ async def handle_tool(
             session_id=session_id,
             name=tool_input["name"],
             content=tool_input["content"],
-            mime_type=tool_input.get("mime_type", "text/markdown"),
+            mime_type=tool_input.get("mime_type", "text/plain"),
             citations=tool_input.get("citations"),
         )
         return {"artifact_id": aid, "name": tool_input["name"]}

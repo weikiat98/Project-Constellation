@@ -122,6 +122,9 @@ export default function SessionPage() {
     // the files generated for that specific user query (not every artifact
     // in the session).
     const runArtifactIds: string[] = [];
+    // Defer the artifact preview auto-open until the recap has streamed
+    // so the user reads the chat reply before the canvas pops open.
+    let pendingPreviewArtifactId: string | null = null;
 
     const unsubscribe = subscribeToStream(
       sessionId,
@@ -148,6 +151,17 @@ export default function SessionPage() {
           case "final_message":
             accumulatedText = event.content;
             setStreamingText(event.content);
+            // Now that the recap text is set, open the canvas for any artifact
+            // that arrived earlier this turn (artifact_written fires before finalize).
+            if (pendingPreviewArtifactId.id) {
+              const artifactId = pendingPreviewArtifactId.id;
+              pendingPreviewArtifactId.id = null;
+              api.getSession(sessionId).then((d) => {
+                setArtifacts(d.artifacts);
+                const newest = d.artifacts.find((a) => a.id === artifactId);
+                if (newest) setPreviewArtifact(newest);
+              }).catch(() => {});
+            }
             break;
           case "agent_spawned":
             setTraceEntries((p) => [...p, { id: uid(), type: "agent_spawned", timestamp: Date.now(), agent_id: event.agent_id, role: event.role }]);
@@ -157,13 +171,15 @@ export default function SessionPage() {
             break;
           case "artifact_written":
             runArtifactIds.push(event.artifact_id);
+            pendingPreviewArtifactId = event.artifact_id;
             setTraceEntries((p) => [...p, { id: uid(), type: "artifact_written", timestamp: Date.now(), artifact_id: event.artifact_id, artifact_name: event.name }]);
-            // Reload artifacts list and auto-open the newest in the canvas.
-            api.getSession(sessionId).then((d) => {
-              setArtifacts(d.artifacts);
-              const newest = d.artifacts.find((a) => a.id === event.artifact_id);
-              if (newest) setPreviewArtifact(newest);
-            }).catch(() => {});
+            // Refresh the artifact list so the header / sidebar counts stay
+            // in sync, but defer auto-opening the preview until the recap
+            // has streamed (handled in run_complete).
+            api.getSession(sessionId).then((d) => setArtifacts(d.artifacts)).catch(() => {});
+            // Buffer the artifact ID — canvas preview is deferred until
+            // final_message fires so the recap text appears first.
+            pendingPreviewArtifactId.id = event.artifact_id;
             break;
           case "agent_done":
             setTraceEntries((p) => [...p, { id: uid(), type: "agent_done", timestamp: Date.now(), agent_id: event.agent_id, summary: event.summary }]);
@@ -196,9 +212,6 @@ export default function SessionPage() {
             accumulatedText = "";
             accumulatedThinking = "";
             runArtifactIds.length = 0;
-            setStreamingText("");
-            setThinkingText("");
-            setIsStreaming(false);
             break;
           case "error":
             setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
@@ -471,6 +484,14 @@ export default function SessionPage() {
             onArtifactPreview={setPreviewArtifact}
             onRetry={handleRetry}
             onEdit={handleEdit}
+            onDropFile={async (file) => {
+              try {
+                const doc = await api.uploadDocument(sessionId, file);
+                setDocuments((prev) => [...prev, doc]);
+              } catch {
+                // Upload failures surface via the next session refresh.
+              }
+            }}
             liveContextPercent={liveContextPercent}
             onCompact={handleCompact}
             compacting={compacting}

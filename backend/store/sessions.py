@@ -104,7 +104,7 @@ _DDL_STATEMENTS = [
         session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         name            TEXT NOT NULL,
         content         TEXT NOT NULL,
-        mime_type       TEXT NOT NULL DEFAULT 'text/markdown',
+        mime_type       TEXT NOT NULL DEFAULT 'text/plain',
         citations_json  TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS agent_runs (
@@ -498,7 +498,7 @@ async def create_artifact(
     session_id: str,
     name: str,
     content: str,
-    mime_type: str = "text/markdown",
+    mime_type: str = "text/plain",
     citations: Optional[list] = None,
 ) -> str:
     aid = str(uuid.uuid4())

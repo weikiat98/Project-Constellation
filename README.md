@@ -52,6 +52,10 @@ Four product goals shape every feature:
 - **Stable `final_message` contract** — the user-facing answer ships as a single SSE event, cleanly separated from streaming reasoning.
 - **Full async backend** — the original synchronous `LibrarianAgentsTeam` prototype has been removed; the CLI now drives the same async orchestrator as the web app.
 - **Splash Page Cosmetics** — Added transitional backgrounds and updated colour scheme.
+- **Pre-send token counter** — the composer now shows a live token estimate for the draft prompt and the base context (system prompt, tools, document index, chat history) via a new `POST /api/sessions/{id}/count_tokens` endpoint backed by Anthropic's free `count_tokens` call.
+- **Persistent per-session audience** — the selected audience (layperson / professional / expert) is stored on the session row and restored on reload instead of resetting each turn.
+- **Optional Advisor tool** — set `ADVISOR_MODEL=claude-opus-4-7` to let the Lead consult a more capable model up to 3 times per run (planning, post-synthesis, pre-finalize). Advisor output is surfaced into the Thinking panel. Leave unset to disable.
+- **`thinking_clear` SSE event** — when the Lead ends a turn with plain text instead of `finalize`, the frontend clears the Thinking panel so the same text isn't shown twice.
 ---
 
 ## Simplified architecture
@@ -140,6 +144,7 @@ constellation/
 │   │   ├── SourceDrawer.tsx          # Slide-in passage viewer
 │   │   ├── AudienceToggle.tsx        # Layperson / Professional / Expert
 │   │   ├── ContextMeter.tsx          # Token-usage bar + Compact button
+│   │   ├── TokenCounter.tsx          # Pre-send prompt + base-context token estimate
 │   │   └── SessionFiles.tsx          # Per-session files menu
 │   └── lib/
 │       ├── api.ts                    # Typed fetch helpers
@@ -173,6 +178,7 @@ constellation/
 | `ANTHROPIC_API_KEY` | Yes | — | Your Anthropic API key. Get one at [console.anthropic.com](https://console.anthropic.com). |
 | `ANTHROPIC_MODEL` | No | `claude-haiku-4-5-20251001` | Overrides the model used by Lead, SubAgent, and Compactor. For production Lead quality, set to `claude-opus-4-6` (or leave the value in `lead.py` and keep Haiku for the other two). |
 | `NEXT_PUBLIC_SSE_BASE` | No | `http://<host>:8000` | Base URL the browser uses to connect to the SSE stream. Useful when the backend runs on a non-default host/port. |
+| `ADVISOR_MODEL` | No | *(empty — disabled)* | Enables the Advisor tool on the Lead executor. Set to `claude-opus-4-7` to let the Lead consult a stronger model up to 3 times per run. Leave unset for strict cost control. |
 
 Example — run everything on Haiku to minimise cost (lower Lead quality):
 

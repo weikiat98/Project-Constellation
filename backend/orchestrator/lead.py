@@ -344,18 +344,10 @@ async def run_lead(
                 # Clear any streamed thinking prose so the final answer isn't
                 # duplicated in the thinking panel when we stream it below.
                 bus.publish("thinking_clear", agent_id=lead_run_id)
-                # Stream the final answer word-by-word so the user sees a
-                # polished "typing" animation instead of a single lump drop.
-                # Chunks are small (~15 chars) to feel natural without
-                # flooding the event bus.
-                _CHUNK = 15
-                for i in range(0, len(final_answer), _CHUNK):
-                    bus.publish(
-                        "text_delta",
-                        agent_id=lead_run_id,
-                        delta=final_answer[i : i + _CHUNK],
-                    )
-                    await asyncio.sleep(0.015)
+                # Emit the final answer as a single event. The client-side
+                # typewriter in ChatPane animates the reveal — chunking on the
+                # server as well made the two mechanisms fight each other and
+                # collapsed the animation to an instant snap.
                 bus.publish("final_message", content=final_answer)
                 bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)

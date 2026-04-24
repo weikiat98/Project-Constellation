@@ -37,10 +37,11 @@ const CITATION_RE = new RegExp(`\\[(${UUID}(?:\\s*[,;]\\s*${UUID})*)\\]`, "g");
 const UUID_RE = new RegExp(UUID, "g");
 
 // Typewriter reveal: `final_message` arrives as a single complete string, so we
-// animate it character-by-character on the client for a streamed feel. Chunk
-// size + interval tuned to finish a ~500-word recap in ~4s without feeling slow.
-const TYPEWRITER_CHARS_PER_TICK = 6;
-const TYPEWRITER_INTERVAL_MS = 16;
+// animate it character-by-character on the client for a streamed feel. Paced
+// to reveal a ~500-word recap in ~8–10s — fast enough to not feel sluggish,
+// slow enough that the user can read as it types.
+const TYPEWRITER_CHARS_PER_TICK = 3;
+const TYPEWRITER_INTERVAL_MS = 20;
 
 function useTypewriter(target: string, enabled: boolean): string {
   const [displayed, setDisplayed] = useState("");
@@ -227,6 +228,10 @@ interface Props {
   messages: ChatMessage[];
   streamingText: string;
   thinkingText: string;
+  // Artifact IDs written during the currently-streaming turn. Rendered inline
+  // with the live assistant bubble so the user sees the download button the
+  // moment the file is produced, not only after the turn commits.
+  streamingArtifactIds?: string[];
   artifacts: Artifact[];
   documents: Document[];
   isStreaming: boolean;
@@ -281,6 +286,7 @@ export default function ChatPane({
   messages,
   streamingText,
   thinkingText,
+  streamingArtifactIds,
   artifacts,
   documents,
   isStreaming,
@@ -484,23 +490,36 @@ export default function ChatPane({
               )}
 
               {typedStreamingText ? (
-                <div className="text-sm leading-relaxed text-slate-200">
-                  <div className="prose prose-sm prose-invert max-w-none">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={markdownComponents({
-                        onCitation: onCitationClick,
-                        messageId: "streaming",
-                        baseMatchIndex: 0,
-                        query: "",
-                        currentMatchIndex: -1,
-                      })}
-                    >
-                      {typedStreamingText}
-                    </ReactMarkdown>
+                <>
+                  <div className="text-sm leading-relaxed text-slate-200">
+                    <div className="prose prose-sm prose-invert max-w-none">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={markdownComponents({
+                          onCitation: onCitationClick,
+                          messageId: "streaming",
+                          baseMatchIndex: 0,
+                          query: "",
+                          currentMatchIndex: -1,
+                        })}
+                      >
+                        {typedStreamingText}
+                      </ReactMarkdown>
+                    </div>
+                    <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom" />
                   </div>
-                  <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom" />
-                </div>
+                  {streamingArtifactIds && streamingArtifactIds.length > 0 && (
+                    <div className="mt-3 space-y-2 max-w-[90%]">
+                      <p className="text-xs text-slate-500 font-medium">Generated files</p>
+                      {streamingArtifactIds
+                        .map((aid) => artifacts.find((a) => a.id === aid))
+                        .filter((a): a is Artifact => Boolean(a))
+                        .map((a) => (
+                          <ArtifactCard key={a.id} artifact={a} onPreview={onArtifactPreview} />
+                        ))}
+                    </div>
+                  )}
+                </>
               ) : !thinkingText ? (
                 <div className="flex items-center gap-2 py-1 text-slate-500">
                   <span className="flex gap-1">

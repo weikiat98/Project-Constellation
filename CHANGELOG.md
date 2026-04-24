@@ -6,11 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
-## [2.1.0]: Frontend Edits
+## [2.1.0] — 2026-04-22: Frontend Edits, Token Counter, Advisor Tool
 
 ### Added
 
 - **Splash slideshow** — the landing page ([frontend/app/page.tsx](frontend/app/page.tsx)) now crossfades through six full-screen backdrop images (`constellation`, `galaxy`, `starrynight` pairs) on a 6-second interval with a 2-second opacity transition. Images are preloaded on mount so the first crossfade never flashes. A top-to-bottom black gradient overlay (`from-black/70 via-black/50 to-black/80`) keeps the title, tagline, and START button legible over bright backdrops. Drop-in location for new images: [frontend/public/splash/](frontend/public/splash/).
+- **Pre-send token counter** — new [TokenCounter](frontend/components/TokenCounter.tsx) component surfaces a live token estimate next to the composer. Shows the draft prompt cost and the base context size (system prompt + tools + 50-chunk document index + chat history) so the user can tell how much of the 200K window a turn will consume before hitting send.
+- **`POST /api/sessions/{id}/count_tokens` endpoint** — wraps Anthropic's free `count_tokens` call in [backend/app.py](backend/app.py) and returns `{ prompt_tokens, base_tokens, total_tokens, window, percent }`. Falls back to the in-house `len(str) // 4` approximation if the Anthropic call fails so the UI never breaks.
+- **`TokenCountRequest` / `TokenCountOut` Pydantic schemas** in [backend/models.py](backend/models.py).
+- **Advisor tool (opt-in)** — set `ADVISOR_MODEL=claude-opus-4-7` to attach Anthropic's beta `advisor_20260301` tool to the Lead executor. The Lead can consult the advisor up to 3 times per run (planning, post-synthesis, pre-finalize). Advisor output arrives as `advisor_tool_result` blocks in the response and is surfaced to the UI as `thinking_delta` events prefixed with `[Advisor]`. Advisor token usage is accumulated into the Lead's tokens_in/tokens_out for accurate accounting. See [backend/orchestrator/lead.py](backend/orchestrator/lead.py).
+- **`thinking_clear` SSE event** — emitted by the Lead when `stop_reason == "end_turn"` so the model's plain-text response isn't shown twice (once in Thinking, once as the final message). Wired through [backend/orchestrator/event_bus.py:70](backend/orchestrator/event_bus.py#L70) (clears the thinking buffer) and handled in the frontend SSE client.
+- **Persistent per-session audience** — new `sessions.audience` column and `SessionUpdate.audience` field. The audience toggle now writes through to `PATCH /api/sessions/{id}` on change, so reloading a session restores the user's last choice instead of defaulting to "professional".
+- **Expanded `finalize`-miss recovery ladder** — when the Lead loop exits without calling `finalize` (iteration cap hit, model ended with `tool_use`, etc.), [lead.py:389](backend/orchestrator/lead.py#L389) now walks three tiers: scrape trailing text blocks → backfill a recap pointing at any artifacts produced this turn → honest "couldn't produce an answer, try Retry" message. Prevents silent empty assistant bubbles.
 
 ### Changed
 

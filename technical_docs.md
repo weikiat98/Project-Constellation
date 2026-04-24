@@ -19,6 +19,7 @@ Comprehensive technical reference for developers working with Constellation. For
   - [3.4 Citation enforcement](#34-citation-enforcement)
   - [3.5 Compaction](#35-compaction)
   - [3.6 Prompt caching](#36-prompt-caching)
+  - [3.7 Advisor tool (optional)](#37-advisor-tool-optional)
 - [4. Event bus and SSE protocol](#4-event-bus-and-sse-protocol)
   - [4.1 Event types](#41-event-types)
   - [4.2 Trace persistence](#42-trace-persistence)
@@ -81,6 +82,7 @@ All routes are mounted under `/api`. Base URL defaults to `http://localhost:8000
 | GET | `/api/sessions/{id}/stream` | 200 (SSE) | Server-Sent Events stream of agent events. |
 | GET | `/api/sessions/{id}/context` | 200 | Token usage estimate: `{ tokens, window, percent }`. |
 | POST | `/api/sessions/{id}/compact` | 200 | Manually trigger context compaction. |
+| POST | `/api/sessions/{id}/count_tokens` | 200 | Pre-send token estimate. Body: `{ content: string }`. Returns `{ prompt_tokens, base_tokens, total_tokens, window, percent }`. Calls Anthropic's free `count_tokens` endpoint under the hood; falls back to the in-house approximation on failure. |
 | GET | `/api/sessions/{id}/trace` | 200 | Replay persisted trace events: `{ events: PersistedTraceEvent[] }`. |
 | GET | `/api/artifacts/{id}` | 200 | Artifact content + metadata (for download or preview). |
 | GET | `/api/chunks/{id}` | 200 | Source chunk content + document filename (powers the citation drawer). |
@@ -91,14 +93,18 @@ CORS is configured to allow `http://localhost:3000` and `http://127.0.0.1:3000`.
 
 All request/response bodies are typed via Pydantic v2 models in [backend/models.py](backend/models.py). Key shapes:
 
-- `SessionCreate`, `SessionUpdate`, `SessionOut`, `SessionDetail`
-- `MessageCreate { content, audience }`, `MessageOut`
+- `SessionCreate { title? }`
+- `SessionUpdate { title?, pinned?, audience? }` — audience is persisted on the session so reloads restore the user's last choice.
+- `SessionOut { id, title, created_at, pinned, audience }`, `SessionDetail { session, messages, documents, artifacts }`
+- `MessageCreate { content, audience }`, `MessageOut { id, session_id, role, content, token_usage?, created_at, artifact_ids[], thinking? }`
 - `DocumentOut { id, session_id, filename, chunk_count, original_filename? }`
 - `ArtifactOut { id, session_id, name, content, mime_type, citations_json? }`
 - `ContextUsageOut { tokens, window, percent }`
+- `TokenCountRequest { content: string = "" }`
+- `TokenCountOut { prompt_tokens, base_tokens, total_tokens, window, percent }`
 - `AgentRunOut { id, session_id, parent_agent_id?, role, status, tokens_in, tokens_out }`
 
-The audience field is validated against `^(layperson|professional|expert)$`.
+The audience field is validated against `^(layperson|professional|expert)$` on both `SessionUpdate` and `MessageCreate`.
 
 ### 2.4 Request/response lifecycle
 
@@ -137,7 +143,15 @@ On each iteration the Lead:
    - Other tools are dispatched through `handle_tool(...)` in [backend/orchestrator/tools.py](backend/orchestrator/tools.py).
 5. Appends the assistant turn and tool results to `messages` and continues.
 
-**Finalize contract.** The Lead's system prompt forces `finalize.result` to be a substantive user-facing recap, not a one-liner. If the Lead calls `write_artifact` and returns an empty or trivially short `result`, [backend/orchestrator/lead.py:232](backend/orchestrator/lead.py#L232) backfills a fallback pointing at the artifact name(s) so the UI never shows a blank message.
+**Finalize contract.** The Lead's system prompt forces `finalize.result` to be a substantive user-facing recap, not a one-liner. If the Lead calls `write_artifact` and returns an empty or trivially short (`len < 500`) `result`, the `finalize` branch in [backend/orchestrator/lead.py:303](backend/orchestrator/lead.py#L303) backfills a fallback pointing at the artifact name(s) so the UI never shows a blank message.
+
+**`finalize`-miss recovery ladder.** If the loop exits without `finalize` ever being called (iteration cap hit, `stop_reason` something other than `tool_use`/`end_turn`, model returned only tool calls with no text), [lead.py:389](backend/orchestrator/lead.py#L389) walks three tiers:
+
+1. Scrape trailing `text` blocks from the last response.
+2. If artifacts were produced this turn, backfill a recap pointing the user at them.
+3. Last resort: explicit "couldn't produce an answer, try Retry" message. Never persist an empty string.
+
+Additionally, when `stop_reason == "end_turn"` and the model returned plain text (a chat-style answer instead of calling `finalize`), the Lead publishes a `thinking_clear` event before re-emitting the text as the user-facing message, so the same content isn't shown twice.
 
 ### 3.2 SubAgents
 
@@ -192,6 +206,29 @@ Both the Lead and SubAgent system prompts carry `cache_control: { type: "ephemer
 - The 50-chunk index attached to the Lead's first user message is not cached (it's per-session), but the large role + instruction preamble is.
 - Subagent system prompts are cached on a per-(role, audience) basis. Re-spawning a subagent with the same role in a short window avoids re-ingesting the system prompt.
 
+### 3.7 Advisor tool (optional)
+
+Gated behind the `ADVISOR_MODEL` environment variable. Unset (default): the Lead runs with the standard `LEAD_TOOLS` list via `client.messages.stream(...)`. Set to a model ID (e.g. `claude-opus-4-7`): `_build_tools(use_advisor=True)` in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) appends an `advisor_20260301` beta tool to the toolset and the call is routed through `client.beta.messages.stream(...)` with the `advisor-tool-2026-03-01` beta header.
+
+**Tool spec.**
+
+```json
+{
+  "type": "advisor_20260301",
+  "name": "advisor",
+  "model": "<ADVISOR_MODEL>",
+  "max_uses": 3
+}
+```
+
+Three uses per run is intentional — it maps to the three natural decision points: planning check, post-synthesis review, and pre-finalize quality gate. Raising `max_uses` burns advisor-model tokens without a clear payoff.
+
+**Surfacing advisor output.** Advisor inference runs server-side inside the same Messages call; the stream pauses silently during sub-inference. Results arrive as `advisor_tool_result` blocks in `response.content` after `stop_reason == "tool_use"`. The Lead loop inspects each block and emits its text as a `thinking_delta` event prefixed with `[Advisor]` so the user sees the advice live in the Thinking panel.
+
+**Token accounting.** Advisor iterations are billed at the advisor model's rate, not the executor's. The Lead accumulates advisor tokens into its own `tokens_in` / `tokens_out` via `response.usage.iterations` (accessed with `getattr` because the field isn't in the typed SDK schema yet). This keeps the per-turn totals correct in the context meter and `agent_runs` table.
+
+**Safety caveat.** The advisor must be at least as capable as the executor — setting it to a weaker model makes no sense. The recommended configuration is Haiku executor + Opus advisor.
+
 ---
 
 ## 4. Event bus and SSE protocol
@@ -213,6 +250,7 @@ The SSE endpoint ([backend/app.py](backend/app.py)) returns a `StreamingResponse
 | --- | --- | --- |
 | `agent_spawned` | `agent_id`, `role`, `parent` | New agent started. `parent` is `null` for the Lead, `"lead"` or a UUID for subagents. |
 | `thinking_delta` | `agent_id`, `delta` | Streaming reasoning/planning text. |
+| `thinking_clear` | `agent_id` | Clears the Thinking panel. Fired when the Lead ends a turn with `stop_reason == "end_turn"` (plain-text response instead of `finalize`) so the same text isn't shown twice — once in Thinking, once as the final message. Also clears the persisted-thinking buffer inside `SessionEventBus`. |
 | `text_delta` | `agent_id`, `delta` | Legacy streaming chat text (still supported by the frontend for forward compatibility). |
 | `final_message` | `content` | The authoritative final answer from the Lead. Emitted once. |
 | `tool_use` | `agent_id`, `tool`, `input` | Agent called a tool with the given input. |
@@ -345,6 +383,7 @@ The SSE client in [frontend/lib/sse.ts](frontend/lib/sse.ts) connects **directly
 Event dispatch:
 
 - `thinking_delta` → appended to `thinkingText`; rendered in a collapsible "Thinking…" block inside the current assistant message slot.
+- `thinking_clear` → resets `thinkingText` so the Lead's plain-text end-of-turn response isn't duplicated (once in Thinking, once as the final message).
 - `text_delta` (legacy) → accumulated as `streamingText`.
 - `final_message` → wholesale replaces `streamingText` with the authoritative answer.
 - `artifact_written` → reloaded via `GET /api/sessions/{id}` so the full artifact body is available for the preview canvas; the newest artifact is auto-opened.
@@ -393,6 +432,7 @@ Outputs use stdout for the answer and stderr for progress so `python cli.py ... 
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | env | — | Required. |
 | `ANTHROPIC_MODEL` | env | `claude-haiku-4-5-20251001` | Overrides Lead, SubAgent, and Compactor models. |
+| `ADVISOR_MODEL` | env | `""` *(disabled)* | Enables the Lead's Advisor tool (`advisor_20260301` beta). Set to a model ID (e.g. `claude-opus-4-7`) that is ≥ the executor in capability. Leave empty to disable. |
 | `NEXT_PUBLIC_SSE_BASE` | env (frontend) | `http://<host>:8000` | SSE base URL. |
 | Context window | `compactor.WINDOW` | 200,000 | Set to match the deployed model's window. |
 | Compaction threshold | `compactor.COMPACT_THRESHOLD` | 0.85 | Fraction of window that triggers compaction. |

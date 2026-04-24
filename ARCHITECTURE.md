@@ -26,9 +26,15 @@ Constellation is a full-stack multi-agent system optimised for deep analysis of 
 │  FastAPI (async, uvicorn)                                        │
 │                                                                  │
 │  POST /sessions          GET  /sessions/{id}                     │
+│  PATCH /sessions/{id}    DELETE /sessions/{id}                   │
+│  DELETE /sessions/{id}/messages/after/{mid}  (edit/retry)        │
 │  POST /sessions/{id}/documents  (ingest pipeline)                │
 │  POST /sessions/{id}/messages   (kicks off agent run)            │
 │  GET  /sessions/{id}/stream     (SSE event stream)               │
+│  GET  /sessions/{id}/trace      (replay persisted trace)         │
+│  GET  /sessions/{id}/context    (token usage)                    │
+│  POST /sessions/{id}/compact    (manual compaction)              │
+│  POST /sessions/{id}/count_tokens  (pre-send estimate)           │
 │  GET  /api/chunks/{id}          (source drawer)                  │
 │  GET  /api/artifacts/{id}                                        │
 └──────────────────────────────▲──────────────────────────────────┘
@@ -43,6 +49,7 @@ Constellation is a full-stack multi-agent system optimised for deep analysis of 
 │  ├── tool: lookup_definition                                     │
 │  ├── tool: spawn_subagent  ──► asyncio.gather ──► N subagents   │
 │  ├── tool: write_artifact                                        │
+│  ├── tool: advisor  (optional; enabled via ADVISOR_MODEL env)   │
 │  └── tool: finalize                                              │
 │                                                                  │
 │  SubAgent (per task, isolated context window)                    │
@@ -53,7 +60,8 @@ Constellation is a full-stack multi-agent system optimised for deep analysis of 
 │  SQLite (aiosqlite + FTS5)                                       │
 │                                                                  │
 │  sessions · messages · documents · chunks · chunks_fts           │
-│  definitions · cross_refs · artifacts · agent_runs              │
+│  definitions · cross_refs · artifacts · agent_runs               │
+│  trace_events  (persisted SSE events, replayed on reload)        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,13 +73,16 @@ Constellation is a full-stack multi-agent system optimised for deep analysis of 
 
 Built with Next.js 15 App Router, React 19, Tailwind CSS.
 
-#### Three-pane layout
+#### Layout
 
 | Pane | Component | Responsibility |
 | ---- | --------- | -------------- |
-| Left sidebar | `UploadZone` | Drag-and-drop document upload, document list |
-| Centre | `ChatPane` | Streaming messages, citation links, artifact cards, input box |
-| Right | `AgentTrace` | Live tree of agent spawns, tool calls, artifact writes |
+| Left sidebar | `ChatSidebar` | Sessions list; pin, rename, delete |
+| Centre | `ChatPane` | Streaming messages + Thinking panel, citation links, artifact cards, composer with inline `TokenCounter` |
+| Right dock | `AgentTracePanel` → `AgentTrace` | Live tree of agent spawns, tool calls, artifact writes, compaction |
+| Slide-in | `ArtifactPreview` | MD / HTML / CSV / plain-text artifact canvas (sibling of chat, not overlay) |
+| Slide-in | `SourceDrawer` | Source chunk viewer for citation clicks |
+| In-session | `UploadZone` + `SessionFiles` | Drag-drop upload and per-session file menu |
 
 #### Key components
 
@@ -81,6 +92,7 @@ Built with Next.js 15 App Router, React 19, Tailwind CSS.
 - **[SourceDrawer](frontend/components/SourceDrawer.tsx)** — slide-in panel fetching the raw source chunk from `/api/chunks/{id}` for verification.
 - **[AudienceToggle](frontend/components/AudienceToggle.tsx)** — switches between layperson / professional / expert; sent with every message.
 - **[ContextMeter](frontend/components/ContextMeter.tsx)** — polls `/api/sessions/{id}/context` and receives live `context_usage` SSE events. Colour-coded bar + Compact button (amber ≥ 70%, red ≥ 90%).
+- **[TokenCounter](frontend/components/TokenCounter.tsx)** — inline pre-send estimator that calls `POST /api/sessions/{id}/count_tokens` (backed by Anthropic's free `count_tokens`) and shows `prompt + base` tokens before the user hits send. Accounts for system prompt, tools, 50-chunk doc index, and chat history.
 
 #### Data flow
 
@@ -167,6 +179,17 @@ Each subagent is a completely fresh `messages.create` call:
 - Replaces the old turns with two synthetic messages (compacted summary + acknowledgement).
 - Publishes `compaction_done` SSE event.
 
+#### Advisor tool (optional)
+
+Gated behind the `ADVISOR_MODEL` environment variable. When set (e.g. `claude-opus-4-7`), `_build_tools()` in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) appends an `advisor_20260301` beta tool to the Lead's toolset and switches the stream to `client.beta.messages.stream(...)` with the `advisor-tool-2026-03-01` beta header.
+
+- `max_uses: 3` per run — matches the three natural decision points: planning, post-synthesis review, and pre-finalize quality gate.
+- Advisor inference runs inside the same Messages call; results arrive as `advisor_tool_result` blocks in `response.content`.
+- The Lead surfaces the advisor's text to the UI as a `thinking_delta` event prefixed with `[Advisor]` so the user sees the counsel live.
+- Advisor token usage is accumulated into the Lead's `tokens_in` / `tokens_out` via `response.usage.iterations` so accounting is complete.
+
+Leave `ADVISOR_MODEL` unset for strict cost control — the standard tool list is used and no advisor calls are made.
+
 ---
 
 ### Persistence (`backend/store/`)
@@ -174,15 +197,16 @@ Each subagent is a completely fresh `messages.create` call:
 #### SQLite schema
 
 ```sql
-sessions       (id, title, created_at)
-messages       (id, session_id, role, content, token_usage, created_at)
-documents      (id, session_id, filename, chunk_count)
+sessions       (id, title, created_at, pinned, audience)
+messages       (id, session_id, role, content, token_usage, thinking, created_at)
+documents      (id, session_id, filename, original_filename, chunk_count)
 chunks         (id, document_id, idx, content, metadata, section_id, page)
 chunks_fts     FTS5 virtual table mirroring chunks.content
 definitions    (id, document_id, term, definition, source_chunk_id)
 cross_refs     (id, document_id, from_chunk_id, to_section_id)
 artifacts      (id, session_id, name, content, mime_type, citations_json)
 agent_runs     (id, session_id, parent_agent_id, role, status, tokens_in, tokens_out)
+trace_events   (id, session_id, run_index, seq, event_type, payload, created_at)
 ```
 
 FTS5 is kept in sync with `chunks` via `AFTER INSERT / UPDATE / DELETE` triggers. Queries are scoped to `document_id` so search never crosses document boundaries.

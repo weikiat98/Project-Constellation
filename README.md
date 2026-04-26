@@ -4,14 +4,15 @@ A full-stack multi-agent system for deep analysis of lengthy and technical docum
 
 Every claim in every answer carries a citation. Every citation is clickable. Every source is verifiable.
 
-> **Version 2.1** — This release is a full rewrite. See [CHANGELOG.md](CHANGELOG.md) for the full list of changes against the original synchronous prototype.
+> **Version 2.2** — UAT-driven fix release on top of the 2.0 rewrite. See [CHANGELOG.md](CHANGELOG.md) for the full release history and [UAT/25April_UAT_Resolution_Plan.md](UAT/25April_UAT_Resolution_Plan.md) for the per-issue fix detail.
 
 ---
 
 ## Table of contents
 
 - [What it does](#what-it-does)
-- [What's new in 2.0](#whats-new-in-20)
+- [What's new in 2.2](#whats-new-in-22)
+- [What's new in 2.1](#whats-new-in-21)
 - [Simplified architecture](#simplified-architecture)
 - [Models and cost architecture](#models-and-cost-architecture)
 - [Project structure](#project-structure)
@@ -39,6 +40,24 @@ Four product goals shape every feature:
 
 ---
 
+## What's new in 2.2
+
+UAT-driven fix release. Closes every issue logged in the 25 April UAT pass plus the free-form observations.
+
+- **Audience toggle now actually changes the output** — the layperson / professional / expert prompts were rewritten as multi-paragraph briefs (reader profile, forbidden vocabulary, required vocabulary, worked example) and hoisted to the top of the system prompt. A new finalize-time self-check rewrites any sentence that violates the chosen register.
+- **Typewriter reveal works end-to-end** — the final-message recap now visibly types out with a blinking cursor and disappears cleanly when done. Internally, `run_complete` no longer unmounts the streaming bubble before the animation runs; the commit is deferred until the typewriter finishes.
+- **Cumulative context meter** — the meter now grows monotonically across turns and only dips on compaction, instead of resetting to single-digit % on each new turn.
+- **Multi-session run management** — switching to another session mid-run no longer abandons the run. A new `last_run_state` field on the session record lets the UI re-attach the SSE stream when you return.
+- **Document chips persist across reloads** — each user message records the documents that were attached at send time, so the chips re-render correctly after a page refresh.
+- **Past-turn thinking panel** — the collapsible "Thought process" panel on previous assistant messages is restored. Server-side thinking buffer is no longer wiped by `thinking_clear`.
+- **Audience-mode banner** — switching modes (manually or via prompt inference) drops a centred `~ switched to layperson mode ~` marker in the chat.
+- **Delete uploaded documents** — Trash icon in the Session files popover removes a document from the session. Refused with a 409 if the document is referenced by a persisted message.
+- **Polish** — copy button in artifact preview, self-sizing artifact cards (hug the title up to ~24 rem), `agent_done` summaries no longer clipped at 200 chars / 3 lines.
+
+Detailed root-cause analysis and per-issue verification: [UAT/25April_UAT_Resolution_Plan.md](UAT/25April_UAT_Resolution_Plan.md).
+
+---
+
 ## What's new in 2.1
 
 - **Splash → Home → Session flow** — a three-page app: landing splash, a home screen with greeting + draft upload, and per-session chat pages.
@@ -56,6 +75,7 @@ Four product goals shape every feature:
 - **Persistent per-session audience** — the selected audience (layperson / professional / expert) is stored on the session row and restored on reload instead of resetting each turn.
 - **Optional Advisor tool** — set `ADVISOR_MODEL=claude-opus-4-7` to let the Lead consult a more capable model up to 3 times per run (planning, post-synthesis, pre-finalize). Advisor output is surfaced into the Thinking panel. Leave unset to disable.
 - **`thinking_clear` SSE event** — when the Lead ends a turn with plain text instead of `finalize`, the frontend clears the Thinking panel so the same text isn't shown twice.
+
 ---
 
 ## Simplified architecture
@@ -110,7 +130,7 @@ All three roles read from the `ANTHROPIC_MODEL` environment variable. Setting it
 ```text
 constellation/
 │
-├── backend/                          # FastAPI application (v1.0.0)
+├── backend/                          # FastAPI application (v1.2.0)
 │   ├── app.py                        # Routes: sessions, documents, messages, SSE, trace, artifacts
 │   ├── models.py                     # Pydantic v2 schemas
 │   ├── orchestrator/
@@ -126,7 +146,7 @@ constellation/
 │       ├── definitions.py            # Defined-term extractor
 │       └── cross_refs.py             # Section cross-reference detector
 │
-├── frontend/                         # Next.js 15 application (v2.0.0)
+├── frontend/                         # Next.js 15 application (v2.2.0)
 │   ├── app/
 │   │   ├── layout.tsx
 │   │   ├── page.tsx                  # Splash page
@@ -234,7 +254,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-> The terminal prints `constellation@2.0.0 dev` — that's the package name and version from [frontend/package.json](frontend/package.json), not a warning.
+> The terminal prints `constellation@2.2.0 dev` — that's the package name and version from [frontend/package.json](frontend/package.json), not a warning.
 
 ### 5. Stop the servers
 

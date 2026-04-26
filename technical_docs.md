@@ -78,7 +78,8 @@ All routes are mounted under `/api`. Base URL defaults to `http://localhost:8000
 | DELETE | `/api/sessions/{id}` | 200 | Cascade-delete session and all its children. |
 | DELETE | `/api/sessions/{id}/messages/after/{message_id}` | 200 | Truncate history from a pivot message onward (edit / retry). |
 | POST | `/api/sessions/{id}/documents` | 201 | Multipart upload; ingests + chunks + indexes the file. |
-| POST | `/api/sessions/{id}/messages` | 202 | Submit user prompt. Body: `{ content: string, audience: "layperson"\|"professional"\|"expert" }`. Kicks off the agent run. |
+| DELETE | `/api/sessions/{id}/documents/{document_id}` | 200 / 404 / 409 | Remove a document from the session. **409** if the document is referenced by any persisted message's `attached_document_ids` (would orphan chip rendering on past turns). |
+| POST | `/api/sessions/{id}/messages` | 202 | Submit user prompt. Body: `{ content: string, audience: "layperson"\|"professional"\|"expert", attached_document_ids?: string[] }`. Document IDs are persisted on the message so chip rendering survives reloads. Kicks off the agent run. |
 | GET | `/api/sessions/{id}/stream` | 200 (SSE) | Server-Sent Events stream of agent events. |
 | GET | `/api/sessions/{id}/context` | 200 | Token usage estimate: `{ tokens, window, percent }`. |
 | POST | `/api/sessions/{id}/compact` | 200 | Manually trigger context compaction. |
@@ -94,9 +95,11 @@ CORS is configured to allow `http://localhost:3000` and `http://127.0.0.1:3000`.
 All request/response bodies are typed via Pydantic v2 models in [backend/models.py](backend/models.py). Key shapes:
 
 - `SessionCreate { title? }`
-- `SessionUpdate { title?, pinned?, audience? }` — audience is persisted on the session so reloads restore the user's last choice.
-- `SessionOut { id, title, created_at, pinned, audience }`, `SessionDetail { session, messages, documents, artifacts }`
-- `MessageCreate { content, audience }`, `MessageOut { id, session_id, role, content, token_usage?, created_at, artifact_ids[], thinking? }`
+- `SessionUpdate { title?, pinned?, audience? }` — audience is persisted on the session so reloads restore the user's last choice. (Note: `last_run_state` is set internally by `submit_message` and the `_run` finally block; it is not part of the public PATCH surface.)
+- `SessionOut { id, title, created_at, pinned, audience, last_run_state }` — `last_run_state` is one of `idle | running | completed | error`; the frontend reads it on session mount to decide whether to re-attach the SSE stream.
+- `SessionDetail { session, messages, documents, artifacts }`
+- `MessageCreate { content, audience, attached_document_ids[] }` — `attached_document_ids` records which documents were attached at send time so chips re-render correctly after reload.
+- `MessageOut { id, session_id, role, content, token_usage?, created_at, artifact_ids[], thinking?, attached_document_ids[], attached_documents[] }` — `attached_documents` is hydrated from the documents table to filenames so the frontend can render chips without a second lookup.
 - `DocumentOut { id, session_id, filename, chunk_count, original_filename? }`
 - `ArtifactOut { id, session_id, name, content, mime_type, citations_json? }`
 - `ContextUsageOut { tokens, window, percent }`
@@ -110,13 +113,23 @@ The audience field is validated against `^(layperson|professional|expert)$` on b
 
 For a single user turn:
 
-1. `POST /api/sessions/{id}/messages` — persists the user message; auto-derives the session title if this is the first message.
+1. `POST /api/sessions/{id}/messages` — persists the user message (with `attached_document_ids`) and auto-derives the session title if this is the first message.
 2. `event_registry.ensure_live(session_id)` returns a fresh open bus (replacing any closed bus from a prior run).
 3. `next_trace_run_index(session_id)` allocates a sequential `run_index` for trace persistence.
-4. The server schedules `asyncio.create_task(_run())`, which calls `run_lead(...)` and closes the bus in a `finally` block. The HTTP response returns immediately with 202.
-5. The browser opens `GET /api/sessions/{id}/stream` via `EventSource`. Events are delivered as `data: {json}\n\n` lines. The stream closes when `run_complete` or `error` fires.
+4. **`update_session(last_run_state="running")`** — the session row is flagged so any client that mounts the session page (or returns from another session) can detect the in-flight run and re-subscribe.
+5. The server schedules `asyncio.create_task(_run())`, which calls `run_lead(...)` and, in `finally`, closes the bus and writes a terminal `last_run_state` of `completed` or `error`. The HTTP response returns immediately with 202.
+6. The browser opens `GET /api/sessions/{id}/stream` via `EventSource`. Events are delivered as `data: {json}\n\n` lines. The stream closes when `run_complete` or `error` fires.
 
 Idempotency is not implemented — double-submitting a message creates two runs. Clients should disable the send button while `isStreaming` is true (the frontend does).
+
+#### Multi-session SSE re-attach
+
+When a user navigates away from a session whose run is still in flight, the browser-side `EventSource` is closed by the React unmount cleanup, but the **backend bus stays open** because `_run` is an `asyncio.Task` that doesn't observe HTTP-client disconnects. When the user returns:
+
+1. The session page calls `GET /api/sessions/{id}` and reads `session.last_run_state`.
+2. If the value is `"running"`, the page calls `attachStream()` immediately and a new `EventSource` connects to `GET /api/sessions/{id}/stream`.
+3. `event_registry.get_or_create(session_id)` returns the still-open bus, and `consume()` yields any events still in the queue plus all subsequent events. The persisted trace (`GET /api/sessions/{id}/trace`) backfills events that fired and were drained while the user was away.
+4. If the run finished while the user was away (`last_run_state == "completed"` or `"error"`), the bus has already closed; the new `consume()` immediately yields the sentinel and the SSE `onClose` handler refetches session detail to show the persisted assistant message.
 
 ---
 
@@ -250,7 +263,7 @@ The SSE endpoint ([backend/app.py](backend/app.py)) returns a `StreamingResponse
 | --- | --- | --- |
 | `agent_spawned` | `agent_id`, `role`, `parent` | New agent started. `parent` is `null` for the Lead, `"lead"` or a UUID for subagents. |
 | `thinking_delta` | `agent_id`, `delta` | Streaming reasoning/planning text. |
-| `thinking_clear` | `agent_id` | Clears the Thinking panel. Fired when the Lead ends a turn with `stop_reason == "end_turn"` (plain-text response instead of `finalize`) so the same text isn't shown twice — once in Thinking, once as the final message. Also clears the persisted-thinking buffer inside `SessionEventBus`. |
+| `thinking_clear` | `agent_id` | UI-only signal: tells the frontend to drop the live Thinking panel display. Fired when the Lead ends a turn with `stop_reason == "end_turn"` (plain-text response instead of `finalize`) so the same text isn't shown twice — once in Thinking, once as the final message. **Does NOT wipe the server-side `_thinking_buffer`** — that buffer is the historical record and must persist so the assistant message's `thinking` field is non-empty after `finalize`. |
 | `text_delta` | `agent_id`, `delta` | Legacy streaming chat text (still supported by the frontend for forward compatibility). |
 | `final_message` | `content` | The authoritative final answer from the Lead. Emitted once. |
 | `tool_use` | `agent_id`, `tool`, `input` | Agent called a tool with the given input. |
@@ -281,10 +294,16 @@ All persistence is a single SQLite file accessed via `aiosqlite`. DDL is in [bac
 
 ```sql
 -- User-facing chats
-sessions(id TEXT PK, title TEXT, created_at TEXT NOT NULL, pinned INTEGER DEFAULT 0)
+sessions(id TEXT PK, title TEXT, created_at TEXT NOT NULL,
+         pinned INTEGER DEFAULT 0,
+         audience TEXT NOT NULL DEFAULT 'professional',
+         last_run_state TEXT NOT NULL DEFAULT 'idle')
 
--- Chat history
-messages(id TEXT PK, session_id FK, role TEXT, content TEXT, token_usage INTEGER, created_at TEXT)
+-- Chat history (per-message attachments + thinking buffer + artifact ids)
+messages(id TEXT PK, session_id FK, role TEXT, content TEXT,
+         token_usage INTEGER, created_at TEXT,
+         artifact_ids_json TEXT, thinking TEXT,
+         attached_document_ids_json TEXT)
 
 -- Uploaded files
 documents(id TEXT PK, session_id FK, filename TEXT, original_filename TEXT, chunk_count INTEGER)
@@ -318,12 +337,17 @@ LLM-generated search queries can contain FTS5 operators (`:`, `-`, `NEAR`, colum
 
 ### 5.3 Migrations
 
-There is no migration framework. Lightweight inline migrations run in `_init_db`:
+There is no migration framework. Lightweight inline migrations run in `_init_db` ([backend/store/sessions.py](backend/store/sessions.py)). Each is gated on a `PRAGMA table_info` check so re-running on an already-migrated DB is a no-op.
 
-- Add `sessions.pinned INTEGER DEFAULT 0` if missing.
-- Add `documents.original_filename TEXT` if missing; backfill from `filename`.
+- `sessions.pinned INTEGER DEFAULT 0` — added in 2.0.
+- `sessions.audience TEXT NOT NULL DEFAULT 'professional'` — added in 2.1.
+- `sessions.last_run_state TEXT NOT NULL DEFAULT 'idle'` — added in 2.2 to support multi-session SSE re-attach. Values: `idle | running | completed | error`.
+- `documents.original_filename TEXT` — added in 2.0; backfilled from `filename`.
+- `messages.artifact_ids_json TEXT` — added in 2.0 for per-turn artifact linkage.
+- `messages.thinking TEXT` — added in 2.0 for persisted reasoning trace.
+- `messages.attached_document_ids_json TEXT` — added in 2.2 so per-message document chips re-render correctly after reload.
 
-Schema changes are idempotent because every DDL is `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`.
+Schema changes are idempotent because every DDL is `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` and every `ALTER TABLE` is gated on a column-presence check.
 
 ---
 
@@ -366,13 +390,21 @@ Both extractors are best-effort and run after ingest. A failure does not block t
 
 Managed with React `useState` hooks. Key pieces of state:
 
-- `session`, `messages`, `documents`, `artifacts` — hydrated from `GET /api/sessions/{id}`.
+- `session`, `messages`, `documents`, `artifacts` — hydrated from `GET /api/sessions/{id}`. Each `Message` carries `attached_documents` (resolved filenames), so the chip render is purely declarative.
 - `traceEntries` — hydrated from `GET /api/sessions/{id}/trace` on mount, appended live from SSE events.
 - `streamingText` — the in-progress final answer during a run (replaced wholesale by `final_message`).
 - `thinkingText` — accumulated `thinking_delta` text.
 - `isStreaming` — true while SSE is active. Disables send, Compose, and retry/edit controls.
 - `liveContextPercent` — seeded from `/context`, updated from `context_usage` events.
 - `drawerChunkId`, `previewArtifact`, `uploadOpen`, `editingTitle`, `titleDraft` — UI state.
+
+Refs (not state — don't trigger re-renders):
+
+- `stopRef` — current `EventSource` unsubscriber. Cleared by `handleStop` and by the unmount effect so navigating between sessions doesn't leak connections.
+- `didAttachInitial` — guards against double-attach on the first mount (handoff prompt vs. running-run reattach).
+- `pendingCommitRef` — holds the deferred `run_complete` flush until the typewriter finishes revealing the recap. See *Deferred-commit pattern* above.
+
+`ChatMessage` was widened in 2.2 to include a transient `role: "system"` variant with `systemKind: "audience_change"`, rendered as a centred italic banner (`~ switched to layperson mode ~`). System messages are not persisted — they live in client state only and are emitted on explicit toggle clicks and on prompt-inferred audience switches.
 
 `attachStream` in the session page is the single entry point for wiring `EventSource` events into state. Each run's artifacts are tracked in a local `runArtifactIds` array so the assistant message persisted at `run_complete` can carry just the files produced for that specific turn.
 
@@ -383,14 +415,27 @@ The SSE client in [frontend/lib/sse.ts](frontend/lib/sse.ts) connects **directly
 Event dispatch:
 
 - `thinking_delta` → appended to `thinkingText`; rendered in a collapsible "Thinking…" block inside the current assistant message slot.
-- `thinking_clear` → resets `thinkingText` so the Lead's plain-text end-of-turn response isn't duplicated (once in Thinking, once as the final message).
+- `thinking_clear` → resets the **client-side** `thinkingText` so the Lead's plain-text end-of-turn response isn't duplicated (once in Thinking, once as the final message). The server-side buffer in `SessionEventBus` is *not* cleared — it's needed to persist a non-empty `thinking` field on the committed assistant message.
 - `text_delta` (legacy) → accumulated as `streamingText`.
-- `final_message` → wholesale replaces `streamingText` with the authoritative answer.
+- `final_message` → wholesale replaces `streamingText` with the authoritative answer. The `useTypewriter` hook in [ChatPane](frontend/components/ChatPane.tsx) then progressively reveals it client-side at ~150 chars / second.
 - `artifact_written` → reloaded via `GET /api/sessions/{id}` so the full artifact body is available for the preview canvas; the newest artifact is auto-opened.
-- `run_complete` → commits the assistant message to `messages` with the accumulated thinking snapshot and run-scoped artifact IDs, then clears streaming state.
+- `run_complete` → **deferred commit** (see below).
 - `error` → appends an error message and clears streaming state.
 
-If the EventSource closes without a `run_complete` (e.g. network blip), the `onClose` callback commits whatever text accumulated so nothing is lost silently.
+If the EventSource closes without a `run_complete` (e.g. network blip), the `onClose` callback first checks `pendingCommitRef`; if there is no pending commit it refetches session detail and commits whatever the backend persisted, so nothing is lost silently.
+
+#### Deferred-commit pattern for `run_complete`
+
+The backend publishes `final_message` and `run_complete` back-to-back in the `finalize` branch ([backend/orchestrator/lead.py](backend/orchestrator/lead.py)). If `run_complete` were processed naively — replacing the live streaming bubble with the persisted bubble from `getSession()` — the typewriter would never have a chance to animate, because the live `streamingText` would be cleared within tens of milliseconds of being set.
+
+The session page solves this with a `pendingCommitRef`:
+
+1. On `run_complete`, the page fetches authoritative session detail and **stashes** the flush as a closure in `pendingCommitRef.current` instead of running it immediately.
+2. The `useTypewriter` hook tracks `displayed.length` versus `target.length` and fires its `onComplete` callback exactly once per fully-revealed recap.
+3. `onComplete` invokes the stashed flush, which calls `setMessages(...)`, clears `streamingText` / `thinkingText`, and sets `isStreaming = false` — handing off cleanly from the live streaming bubble to the persisted bubble.
+4. The on-close handler also early-returns when a pending commit is present so it can't clobber the live state mid-animation.
+
+The empty-recap edge case (rare — a `finalize` with empty `result` that the backfill catches) flushes immediately because there is nothing to type out.
 
 ### 8.4 Citation rendering and source drawer
 

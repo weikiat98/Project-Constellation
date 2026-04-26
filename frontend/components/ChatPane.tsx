@@ -43,27 +43,45 @@ const UUID_RE = new RegExp(UUID, "g");
 const TYPEWRITER_CHARS_PER_TICK = 3;
 const TYPEWRITER_INTERVAL_MS = 20;
 
-function useTypewriter(target: string, enabled: boolean): string {
+function useTypewriter(
+  target: string,
+  enabled: boolean,
+  onComplete?: () => void
+): string {
   const [displayed, setDisplayed] = useState("");
   const prevTargetRef = useRef("");
+  // Track whether we've fired the completion callback for the current target,
+  // so a second pass at the same length doesn't re-fire it.
+  const completedForRef = useRef("");
 
   useEffect(() => {
     if (!enabled) {
       // Not streaming — snap to full text so finalized messages aren't animated.
       setDisplayed(target);
       prevTargetRef.current = target;
+      completedForRef.current = target;
       return;
     }
     // If target shrank (new stream starting) or is empty, reset.
     if (!target.startsWith(prevTargetRef.current)) {
       setDisplayed("");
+      completedForRef.current = "";
     }
     prevTargetRef.current = target;
   }, [target, enabled]);
 
   useEffect(() => {
     if (!enabled) return;
-    if (displayed.length >= target.length) return;
+    if (displayed.length >= target.length) {
+      // We've caught up. Fire onComplete exactly once per target so the parent
+      // can flush the deferred run_complete commit when the user has finished
+      // reading the typed-out recap.
+      if (target.length > 0 && completedForRef.current !== target) {
+        completedForRef.current = target;
+        onComplete?.();
+      }
+      return;
+    }
     const handle = window.setInterval(() => {
       setDisplayed((prev) => {
         if (prev.length >= target.length) return prev;
@@ -71,7 +89,7 @@ function useTypewriter(target: string, enabled: boolean): string {
       });
     }, TYPEWRITER_INTERVAL_MS);
     return () => window.clearInterval(handle);
-  }, [target, displayed.length, enabled]);
+  }, [target, displayed.length, enabled, onComplete]);
 
   return displayed;
 }
@@ -215,12 +233,15 @@ function countMatches(haystack: string, needle: string): number {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   streaming?: boolean;
   attachedDocs?: string[]; // user-facing filenames attached when this message was sent
   thinking?: string; // reasoning text the agentic system produced while working on this turn
   artifactIds?: string[]; // artifacts produced *during this turn* — rendered inline with this message only
+  // For system role: a transient marker shown as a centred banner in the chat
+  // (e.g. "~ switched to layperson mode ~"). Not persisted on the server.
+  systemKind?: "audience_change";
 }
 
 interface Props {
@@ -243,6 +264,10 @@ interface Props {
   onRetry?: (assistantMessageId: string) => void;
   onEdit?: (userMessageId: string, newContent: string) => void;
   onDropFile?: (file: File) => void;
+  // Fired exactly once per streamed recap, when the typewriter has revealed
+  // the full text. The parent uses this to flush the deferred `run_complete`
+  // commit so the live bubble isn't unmounted mid-animation.
+  onTypewriterComplete?: () => void;
 
   // Context meter
   liveContextPercent?: number;
@@ -298,6 +323,7 @@ export default function ChatPane({
   onRetry,
   onEdit,
   onDropFile,
+  onTypewriterComplete,
   liveContextPercent,
   onCompact,
   compacting,
@@ -317,7 +343,13 @@ export default function ChatPane({
 
   // Progressively reveal the recap. The backend sends `final_message` as one
   // complete string, so animate it client-side for a smooth streamed feel.
-  const typedStreamingText = useTypewriter(streamingText, isStreaming);
+  // The onComplete callback is what gates `run_complete` commit upstream — it
+  // fires exactly once per fully-revealed recap.
+  const typedStreamingText = useTypewriter(
+    streamingText,
+    isStreaming,
+    onTypewriterComplete
+  );
 
   // Debounced token-count fetch: recomputes ~400ms after the user stops typing,
   // also refreshes when the document set changes (new upload → larger base).
@@ -509,7 +541,7 @@ export default function ChatPane({
                     <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom" />
                   </div>
                   {streamingArtifactIds && streamingArtifactIds.length > 0 && (
-                    <div className="mt-3 space-y-2 max-w-[90%]">
+                    <div className="mt-3 flex flex-col items-start gap-2">
                       <p className="text-xs text-slate-500 font-medium">Generated files</p>
                       {streamingArtifactIds
                         .map((aid) => artifacts.find((a) => a.id === aid))
@@ -702,6 +734,19 @@ function MessageRow({
     onEdit?.(msg.id, next);
   }
 
+  if (msg.role === "system") {
+    // Centred dim banner — used for audience-mode switches so the user has a
+    // clear visual marker of when their toggle / inferred-from-prompt change
+    // took effect. Not persisted; transient only.
+    return (
+      <div className="flex justify-center py-1">
+        <span className="text-[11px] text-slate-500 italic tracking-wide">
+          ~ {msg.content} ~
+        </span>
+      </div>
+    );
+  }
+
   const isUser = msg.role === "user";
 
   if (isUser) {
@@ -832,7 +877,7 @@ function MessageRow({
           </div>
         )}
         {producedArtifacts.length > 0 && (
-          <div className="mt-3 space-y-2 max-w-[90%]">
+          <div className="mt-3 flex flex-col items-start gap-2">
             <p className="text-xs text-slate-500 font-medium">Generated files</p>
             {producedArtifacts.map((a) => (
               <ArtifactCard key={a.id} artifact={a} onPreview={onArtifactPreview} />

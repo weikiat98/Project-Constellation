@@ -114,6 +114,11 @@ export default function SessionPage() {
 
   const stopRef = useRef<(() => void) | null>(null);
   const didAttachInitial = useRef(false);
+  // Holds a deferred commit triggered by `run_complete`. The actual flush
+  // (setMessages + clear streamingText) waits until the typewriter has
+  // finished revealing the recap so the live bubble isn't unmounted
+  // mid-animation. See P1-1 in the v2.1 resolution plan.
+  const pendingCommitRef = useRef<(() => void) | null>(null);
 
   const attachStream = useCallback(() => {
     setStreamingText("");
@@ -204,28 +209,54 @@ export default function SessionPage() {
             setTraceEntries((p) => [...p, { id: uid(), type: "compaction_done", timestamp: Date.now(), before_tokens: event.before_tokens, after_tokens: event.after_tokens }]);
             break;
           case "run_complete":
-            // The backend persisted the assistant message (with its artifact
-            // IDs and thinking trace). Refetch authoritative state instead of
-            // relying on in-stream accumulators — this also repairs races
-            // where `final_message` was empty or arrived out of order.
+            // Defer the commit: the typewriter is still revealing the recap.
+            // If we replaced the live streaming bubble with the persisted
+            // bubble right now, the typewriter would unmount before it had a
+            // chance to animate. Instead, capture the authoritative state in
+            // a closure and only flush it when the typewriter signals done.
             api.getSession(sessionId).then((d) => {
-              setSession(d.session);
-              setArtifacts(d.artifacts);
-              setMessages(
-                d.messages.map((m) => ({
-                  id: m.id,
-                  role: m.role as "user" | "assistant",
-                  content: m.content,
-                  artifactIds:
-                    m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
-                  thinking: m.thinking || undefined,
-                }))
-              );
-            }).catch(() => {});
-            accumulatedText = "";
-            accumulatedThinking = "";
-            runArtifactIds.length = 0;
-            setRunArtifactIds([]);
+              const flush = () => {
+                setSession(d.session);
+                setArtifacts(d.artifacts);
+                setMessages(
+                  d.messages.map((m) => ({
+                    id: m.id,
+                    role: m.role as "user" | "assistant",
+                    content: m.content,
+                    artifactIds:
+                      m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
+                    thinking: m.thinking || undefined,
+                    attachedDocs:
+                      m.attached_documents && m.attached_documents.length
+                        ? m.attached_documents
+                        : undefined,
+                  }))
+                );
+                accumulatedText = "";
+                accumulatedThinking = "";
+                runArtifactIds.length = 0;
+                setRunArtifactIds([]);
+                setStreamingText("");
+                setThinkingText("");
+                setIsStreaming(false);
+              };
+              // If there's no recap to type out (rare — empty finalize), flush
+              // immediately. Otherwise stash the flush and wait for the
+              // typewriter callback to invoke it.
+              if (!accumulatedText) {
+                flush();
+              } else {
+                pendingCommitRef.current = flush;
+              }
+            }).catch(() => {
+              // Refetch failed — fall back to clearing the stream-only state
+              // so the user isn't stuck on a permanent typing cursor.
+              accumulatedText = "";
+              accumulatedThinking = "";
+              runArtifactIds.length = 0;
+              setRunArtifactIds([]);
+              setIsStreaming(false);
+            });
             break;
           case "error":
             setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
@@ -239,9 +270,14 @@ export default function SessionPage() {
         }
       },
       () => {
-        // Stream closed — source-of-truth is the backend. Refetch so any
-        // message the backend persisted (even one the SSE never delivered a
-        // `final_message` for) shows up immediately.
+        // Stream closed — source-of-truth is the backend. If `run_complete`
+        // already arrived, the deferred-commit ref (pendingCommitRef) is
+        // either still queued (typewriter still running) or already flushed.
+        // Don't stomp on the live streaming state in either case — the commit
+        // path will clear it when the typewriter is done. We only need to
+        // refetch + flush if `run_complete` never arrived (e.g. the EventSource
+        // dropped on a network blip).
+        if (pendingCommitRef.current) return;
         api.getSession(sessionId).then((d) => {
           setSession(d.session);
           setArtifacts(d.artifacts);
@@ -253,6 +289,10 @@ export default function SessionPage() {
               artifactIds:
                 m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
               thinking: m.thinking || undefined,
+              attachedDocs:
+                m.attached_documents && m.attached_documents.length
+                  ? m.attached_documents
+                  : undefined,
             }))
           );
         }).catch(() => {});
@@ -278,6 +318,10 @@ export default function SessionPage() {
           content: m.content,
           artifactIds: m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
           thinking: m.thinking || undefined,
+          attachedDocs:
+            m.attached_documents && m.attached_documents.length
+              ? m.attached_documents
+              : undefined,
         }))
       );
       setDocuments(detail.documents);
@@ -304,9 +348,10 @@ export default function SessionPage() {
           api.updateSession(sessionId, { audience: inferred }).catch(() => {});
         }
         router.replace(`/sessions/${sessionId}`);
+        const handoffAttachedIds = detail.documents.map((d) => d.id);
         setMessages((prev) => [...prev, { id: uid(), role: "user", content: promptParam, attachedDocs: detail.documents.map((d) => d.filename) }]);
         attachStream();
-        api.sendMessage(sessionId, promptParam, chosenAud)
+        api.sendMessage(sessionId, promptParam, chosenAud, handoffAttachedIds)
           .then(() =>
             api.getSession(sessionId).then((d) => {
               setSession(d.session);
@@ -317,8 +362,29 @@ export default function SessionPage() {
             setIsStreaming(false);
             stopRef.current?.();
           });
+      } else if (
+        !didAttachInitial.current &&
+        detail.session.last_run_state === "running"
+      ) {
+        // No handoff prompt, but the backend says a run is still in flight on
+        // this session — most likely the user navigated away from this session
+        // mid-stream and just came back. Re-subscribe to the SSE bus so the
+        // remaining events (including `final_message` / `run_complete`) drive
+        // the UI to its terminal state. Persisted trace already filled in any
+        // events that fired while we were unmounted.
+        didAttachInitial.current = true;
+        attachStream();
       }
     }).catch(() => router.push("/home"));
+
+    // Cleanup: when the user navigates away (different session, /home, etc.),
+    // close the EventSource so we don't leak connections. The backend run
+    // itself keeps running — the next mount will detect last_run_state and
+    // re-attach.
+    return () => {
+      stopRef.current?.();
+      stopRef.current = null;
+    };
   }, [sessionId, router, searchParams, attachStream, audience]);
 
   const handleSend = useCallback(async (text: string, attachedDocs: string[] = []) => {
@@ -332,10 +398,39 @@ export default function SessionPage() {
       api.updateSession(sessionId, { audience: inferred }).catch(() => {});
     }
 
-    setMessages((prev) => [...prev, { id: uid(), role: "user", content: text, attachedDocs }]);
+    setMessages((prev) => {
+      // If the prompt triggered an inferred audience switch, drop a banner
+      // *before* the user message so the user can see why the next reply is
+      // in a different register.
+      const banner: ChatMessage[] =
+        inferred && inferred !== audience
+          ? [
+              {
+                id: uid(),
+                role: "system",
+                systemKind: "audience_change",
+                content: `switched to ${inferred} mode`,
+              },
+            ]
+          : [];
+      return [
+        ...prev,
+        ...banner,
+        { id: uid(), role: "user", content: text, attachedDocs },
+      ];
+    });
     attachStream();
     try {
-      await api.sendMessage(sessionId, text, resolvedAudience);
+      // Persist the documents that were present at send time so the chip
+      // re-renders correctly on reload. Source-of-truth for IDs is the
+      // current `documents` state (kept in sync with the backend via
+      // session refresh + upload handlers).
+      await api.sendMessage(
+        sessionId,
+        text,
+        resolvedAudience,
+        documents.map((d) => d.id)
+      );
       // Refresh session so the auto-generated title shows up in both the
       // header and the sidebar without requiring a page reload.
       api.getSession(sessionId).then((d) => {
@@ -346,7 +441,7 @@ export default function SessionPage() {
       setIsStreaming(false);
       stopRef.current?.();
     }
-  }, [sessionId, audience, isStreaming, attachStream]);
+  }, [sessionId, audience, isStreaming, attachStream, documents]);
 
   function handleStop() {
     stopRef.current?.();
@@ -391,12 +486,19 @@ export default function SessionPage() {
     setMessages((prev) => prev.filter((_, i) => i < idx));
     attachStream();
     try {
-      await api.sendMessage(sessionId, userMsg.content, audience);
+      // Re-send with the same doc set the user had at retry time — keeps the
+      // re-rendered user bubble's chips consistent with what the agent saw.
+      await api.sendMessage(
+        sessionId,
+        userMsg.content,
+        audience,
+        documents.map((d) => d.id)
+      );
     } catch {
       setIsStreaming(false);
       stopRef.current?.();
     }
-  }, [messages, sessionId, audience, isStreaming, attachStream]);
+  }, [messages, sessionId, audience, isStreaming, attachStream, documents]);
 
   const handleEdit = useCallback(async (userMessageId: string, newContent: string) => {
     if (isStreaming) return;
@@ -410,12 +512,28 @@ export default function SessionPage() {
     });
     attachStream();
     try {
-      await api.sendMessage(sessionId, newContent, audience);
+      await api.sendMessage(
+        sessionId,
+        newContent,
+        audience,
+        documents.map((d) => d.id)
+      );
     } catch {
       setIsStreaming(false);
       stopRef.current?.();
     }
-  }, [messages, sessionId, audience, isStreaming, attachStream]);
+  }, [messages, sessionId, audience, isStreaming, attachStream, documents]);
+
+  // Fired by ChatPane when the typewriter has revealed the full recap. If
+  // `run_complete` already arrived and stashed a deferred flush, run it now
+  // so the live bubble hands off to the persisted bubble cleanly.
+  const handleTypewriterComplete = useCallback(() => {
+    const pending = pendingCommitRef.current;
+    if (pending) {
+      pendingCommitRef.current = null;
+      pending();
+    }
+  }, []);
 
   const previewOpen = !!previewArtifact;
 
@@ -468,7 +586,19 @@ export default function SessionPage() {
             <AudienceToggle
               value={audience}
               onChange={(next) => {
+                if (next === audience) return;
                 setAudience(next);
+                // Drop a transient banner in the chat so the user has a clear
+                // visual marker of when the toggle took effect.
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: uid(),
+                    role: "system",
+                    systemKind: "audience_change",
+                    content: `switched to ${next} mode`,
+                  },
+                ]);
                 // Persist the user's choice so refresh / session switching keeps it.
                 api.updateSession(sessionId, { audience: next }).catch(() => {});
               }}
@@ -480,6 +610,19 @@ export default function SessionPage() {
               artifacts={artifacts}
               onUploadClick={() => setUploadOpen(true)}
               onArtifactClick={setPreviewArtifact}
+              onDocumentDelete={async (d) => {
+                if (!window.confirm(`Remove "${d.filename}" from this chat?`)) return;
+                try {
+                  await api.deleteDocument(sessionId, d.id);
+                  setDocuments((prev) => prev.filter((x) => x.id !== d.id));
+                } catch (err) {
+                  // Surface the server's reason (most often: doc is referenced
+                  // by a previous message) so the user knows why it failed.
+                  const msg =
+                    err instanceof Error ? err.message : "Failed to delete document.";
+                  window.alert(msg);
+                }
+              }}
             />
           </div>
         </header>
@@ -510,6 +653,7 @@ export default function SessionPage() {
                 // Upload failures surface via the next session refresh.
               }
             }}
+            onTypewriterComplete={handleTypewriterComplete}
             liveContextPercent={liveContextPercent}
             onCompact={handleCompact}
             compacting={compacting}

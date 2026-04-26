@@ -29,6 +29,7 @@ Constellation is a full-stack multi-agent system optimised for deep analysis of 
 │  PATCH /sessions/{id}    DELETE /sessions/{id}                   │
 │  DELETE /sessions/{id}/messages/after/{mid}  (edit/retry)        │
 │  POST /sessions/{id}/documents  (ingest pipeline)                │
+│  DELETE /sessions/{id}/documents/{did}  (refused if referenced)  │
 │  POST /sessions/{id}/messages   (kicks off agent run)            │
 │  GET  /sessions/{id}/stream     (SSE event stream)               │
 │  GET  /sessions/{id}/trace      (replay persisted trace)         │
@@ -59,7 +60,8 @@ Constellation is a full-stack multi-agent system optimised for deep analysis of 
 ┌──────────────────────────────▼──────────────────────────────────┐
 │  SQLite (aiosqlite + FTS5)                                       │
 │                                                                  │
-│  sessions · messages · documents · chunks · chunks_fts           │
+│  sessions (+ last_run_state) · messages (+ attached docs)        │
+│  documents · chunks · chunks_fts                                 │
 │  definitions · cross_refs · artifacts · agent_runs               │
 │  trace_events  (persisted SSE events, replayed on reload)        │
 └─────────────────────────────────────────────────────────────────┘
@@ -197,8 +199,9 @@ Leave `ADVISOR_MODEL` unset for strict cost control — the standard tool list i
 #### SQLite schema
 
 ```sql
-sessions       (id, title, created_at, pinned, audience)
-messages       (id, session_id, role, content, token_usage, thinking, created_at)
+sessions       (id, title, created_at, pinned, audience, last_run_state)
+messages       (id, session_id, role, content, token_usage, thinking,
+                artifact_ids_json, attached_document_ids_json, created_at)
 documents      (id, session_id, filename, original_filename, chunk_count)
 chunks         (id, document_id, idx, content, metadata, section_id, page)
 chunks_fts     FTS5 virtual table mirroring chunks.content
@@ -208,6 +211,8 @@ artifacts      (id, session_id, name, content, mime_type, citations_json)
 agent_runs     (id, session_id, parent_agent_id, role, status, tokens_in, tokens_out)
 trace_events   (id, session_id, run_index, seq, event_type, payload, created_at)
 ```
+
+`sessions.last_run_state` (`idle | running | completed | error`, added in 2.2) is the source of truth for whether an agent run is in flight. The frontend reads it on session mount and re-attaches the SSE stream when the value is `running`, enabling cross-session navigation without losing in-flight runs. `messages.attached_document_ids_json` (added in 2.2) preserves which documents the user attached *for that turn* so chip rendering survives reloads.
 
 FTS5 is kept in sync with `chunks` via `AFTER INSERT / UPDATE / DELETE` triggers. Queries are scoped to `document_id` so search never crosses document boundaries.
 
@@ -260,6 +265,18 @@ Citation enforcement is architectural, not advisory. Subagent system prompts man
 - Subagent system prompts: cached per-subagent.
 - Document chunk index (first user message): cached after first call, amortised across all subagents in a session.
 
+### Run state lives on the session row, not in memory
+
+Agent runs are background `asyncio.Task`s that don't observe HTTP-client disconnects. If the user navigates away mid-run, the task keeps going, the bus keeps publishing, and the queue keeps buffering. The frontend needs a way to detect this on remount.
+
+Putting that signal in process memory (e.g. a `set[session_id]` of active runs) would not survive a backend restart and would require a separate inspection endpoint. Instead, `sessions.last_run_state` is set to `running` before the task is spawned and to `completed` / `error` in the task's `finally` block. The session-detail response already exists, so the frontend learns the state for free on its existing mount call. After detecting `running`, the page re-subscribes via the existing SSE endpoint — `EventBusRegistry.get_or_create` returns the still-open bus and `consume()` delivers the buffered tail.
+
+### Final-message typewriter is gated by a deferred commit
+
+The Lead emits `final_message` and `run_complete` back-to-back from the `finalize` branch. If the frontend processed `run_complete` naively — replacing the live streaming bubble with the persisted bubble — the typewriter animation would never run, because the live `streamingText` would be cleared within tens of milliseconds.
+
+The fix is a single ref (`pendingCommitRef`) that holds the post-`run_complete` flush as a closure. The flush only runs when the typewriter's `onComplete` callback fires (i.e. `displayed.length === target.length`), guaranteeing the user sees the recap type out before the bubble hands off to its persisted form. The on-close handler short-circuits when a commit is pending so it can't clobber the live state on stream-end.
+
 ### SQLite over Postgres
 
 Single-user, local-first deployment. SQLite with WAL mode handles concurrent async reads. FTS5 is built in. Migration to Postgres is straightforward if multi-instance deployment becomes necessary (Phase B6).
@@ -289,3 +306,5 @@ Single-user, local-first deployment. SQLite with WAL mode handles concurrent asy
 | [document_loader.py](document_loader.py) | Multi-format file loader |
 | [document_chunker.py](document_chunker.py) | Intelligent chunker |
 | [cli.py](cli.py) | CLI (async orchestrator) |
+| [UAT/25April_UAT Checklist.md](UAT/25April_UAT%20Checklist.md) | UAT v2.1 test pass + issue log |
+| [UAT/25April_UAT_Resolution_Plan.md](UAT/25April_UAT_Resolution_Plan.md) | Per-issue root cause + resolution + verification (drives 2.2) |

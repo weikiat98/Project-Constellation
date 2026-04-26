@@ -62,13 +62,15 @@ class SessionEventBus:
 
         # Mirror thinking deltas into a buffer so the orchestrator can persist
         # the full reasoning stream with the assistant message. `thinking_clear`
-        # drops what's accumulated (model ended turn without `finalize`).
+        # is a UI-only signal — it tells the client to drop the live panel
+        # display because the same prose is about to re-stream as the final
+        # message. The server-side buffer is the historical record of the
+        # model's reasoning and must be preserved so the persisted assistant
+        # message has a non-empty `thinking` field.
         if event_type == "thinking_delta":
             delta = data.get("delta")
             if isinstance(delta, str):
                 self._thinking_buffer.append(delta)
-        elif event_type == "thinking_clear":
-            self._thinking_buffer.clear()
 
         # Persist trace-relevant events so they survive reloads.
         if (

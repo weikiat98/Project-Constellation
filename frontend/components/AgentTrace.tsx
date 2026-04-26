@@ -46,7 +46,20 @@ function EntryLabel({ e }: { e: TraceEntry }) {
     case "artifact_written":
       return <span className="text-emerald-300">Artifact: <em className="not-italic text-slate-300">{e.artifact_name}</em></span>;
     case "agent_done":
-      return <span className="text-emerald-300">Agent done</span>;
+      // Preview the first ~80 chars of the summary in the collapsed row so
+      // the user can scan results without expanding every entry. Click the
+      // row to see the full subagent finding.
+      return (
+        <span className="text-emerald-300">
+          Agent done
+          {e.summary && (
+            <em className="not-italic text-slate-400 font-normal">
+              {" — "}
+              {e.summary.length > 80 ? e.summary.slice(0, 80) + "…" : e.summary}
+            </em>
+          )}
+        </span>
+      );
     case "compaction_done":
       return (
         <span className="text-purple-300">
@@ -67,7 +80,13 @@ function EntryDetail({ e }: { e: TraceEntry }) {
     );
   }
   if (e.type === "agent_done" && e.summary) {
-    return <p className="text-xs text-slate-400 mt-1 line-clamp-3">{e.summary}</p>;
+    // Full text in a scrollable, monospace block so users can read the
+    // whole subagent finding without it being clipped to 3 lines.
+    return (
+      <pre className="text-xs text-slate-300 mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words bg-[#13151f] rounded p-2 leading-relaxed">
+        {e.summary}
+      </pre>
+    );
   }
   return null;
 }

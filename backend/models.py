@@ -29,6 +29,9 @@ class SessionOut(BaseModel):
     created_at: datetime
     pinned: bool = False
     audience: str = "professional"
+    # Tracks whether a run is in flight so the frontend can re-attach the SSE
+    # stream after a navigation away. Values: idle | running | completed | error.
+    last_run_state: str = "idle"
 
     model_config = {"from_attributes": True}
 
@@ -38,6 +41,9 @@ class SessionOut(BaseModel):
 class MessageCreate(BaseModel):
     content: str
     audience: str = Field(default="professional", pattern="^(layperson|professional|expert)$")
+    # Document IDs the user attached to this specific turn. Persisted on the
+    # message so chips render correctly after reload.
+    attached_document_ids: list[str] = Field(default_factory=list)
 
 
 class MessageOut(BaseModel):
@@ -49,6 +55,11 @@ class MessageOut(BaseModel):
     created_at: datetime
     artifact_ids: list[str] = Field(default_factory=list)
     thinking: Optional[str] = None
+    # Document IDs and resolved filenames attached when this turn was sent.
+    # The frontend uses `attached_documents` (filenames) for chip rendering;
+    # `attached_document_ids` is exposed for any future deep-linking.
+    attached_document_ids: list[str] = Field(default_factory=list)
+    attached_documents: list[str] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

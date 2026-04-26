@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FileText, FolderOpen, Upload, Sparkles } from "lucide-react";
+import { FileText, FolderOpen, Upload, Sparkles, Trash2 } from "lucide-react";
 import type { Artifact, Document } from "@/lib/api";
 
 interface SessionFilesProps {
@@ -9,6 +9,9 @@ interface SessionFilesProps {
   artifacts: Artifact[];
   onUploadClick: () => void;
   onArtifactClick: (artifact: Artifact) => void;
+  // When provided, each document row gets a delete affordance. The handler is
+  // expected to confirm + call the API + update parent state.
+  onDocumentDelete?: (document: Document) => void | Promise<void>;
 }
 
 export default function SessionFiles({
@@ -16,6 +19,7 @@ export default function SessionFiles({
   artifacts,
   onUploadClick,
   onArtifactClick,
+  onDocumentDelete,
 }: SessionFilesProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -70,12 +74,24 @@ export default function SessionFiles({
                 {documents.map((d) => (
                   <li
                     key={d.id}
-                    className="flex items-start gap-1.5 text-xs text-slate-300 py-0.5"
+                    className="group flex items-start gap-1.5 text-xs text-slate-300 py-0.5"
                     title={`${d.filename} — ${d.chunk_count} chunks`}
                   >
                     <FileText className="w-3 h-3 text-blue-400 shrink-0 mt-0.5" />
                     <span className="truncate flex-1">{d.filename}</span>
                     <span className="text-slate-600 text-[10px] shrink-0">{d.chunk_count}c</span>
+                    {onDocumentDelete && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onDocumentDelete(d);
+                        }}
+                        title="Remove document"
+                        className="p-0.5 rounded text-slate-600 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-[#1a1d27] transition shrink-0"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>

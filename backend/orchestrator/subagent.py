@@ -45,16 +45,32 @@ _SUBAGENT_TOOLS = [
 def _make_system_prompt(role: str, audience: str) -> str:
     audience_instruction = {
         "layperson": (
-            "Explain findings in plain, everyday language. Avoid jargon. "
-            "Use short sentences and simple vocabulary."
+            "TARGET READER: A non-expert with no background in this domain.\n"
+            "FORBIDDEN: Latin terms, statute/section numbers, unexpanded acronyms, "
+            "jargon, hedged legal verbs ('shall', 'whereby').\n"
+            "REQUIRED: Short sentences (≤20 words). Concrete nouns. Everyday verbs. "
+            "If you must mention a technical concept, paraphrase it first.\n"
+            "EXAMPLE: ❌ 'The lessee shall remit consideration quarterly.' "
+            "✅ 'The tenant has to pay rent every three months.'\n"
+            "Citations [chunk_id] are still mandatory — only the prose changes."
         ),
         "professional": (
-            "Use domain-appropriate terminology. Assume the reader has professional "
-            "familiarity with the subject matter."
+            "TARGET READER: A working professional with domain familiarity "
+            "(junior lawyer, analyst, PM).\n"
+            "REQUIRED: Domain terminology used correctly; acronyms expanded on first "
+            "use; section references where they aid navigation.\n"
+            "AVOID: Both dumbed-down chat and dense expert-only Latin.\n"
+            "EXAMPLE: ✅ 'The lease requires quarterly rent payments (Section 12(3)(a)). "
+            "Late payment triggers the default-interest clause.'"
         ),
         "expert": (
-            "Use precise technical/legal language. Include full section references. "
-            "Assume expert-level background knowledge."
+            "TARGET READER: A subject-matter expert (counsel, senior analyst).\n"
+            "REQUIRED: Full statutory / clause references in canonical form. "
+            "Domain Latin where it carries specific meaning. Distinguish operative "
+            "vs. interpretive provisions. Use the document's defined terms verbatim.\n"
+            "AVOID: Paraphrasing defined terms; layperson-friendly restatements.\n"
+            "EXAMPLE: ✅ 'Section 12(3)(a) imposes a quarterly rent obligation on the "
+            "Lessee, subject to the default-interest mechanism in Section 18(2).'"
         ),
     }.get(audience, "Use domain-appropriate terminology.")
 
@@ -193,7 +209,11 @@ async def run_subagent(
 
     citations_present = bool(_CITATION_RE.search(result_text))
 
-    bus.publish("agent_done", agent_id=agent_id, summary=result_text[:200])
+    # Send up to 2KB of subagent output. The trace UI lets the user expand
+    # this on click; truncating at 200 was hiding nearly all of the actual
+    # findings. Append an ellipsis if we did truncate so the UI can hint at it.
+    summary = result_text if len(result_text) <= 2000 else result_text[:2000] + "…"
+    bus.publish("agent_done", agent_id=agent_id, summary=summary)
 
     await finish_agent_run(run_id, tokens_in, tokens_out)
 

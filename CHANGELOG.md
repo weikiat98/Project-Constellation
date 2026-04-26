@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.2.0] — 2026-04-26: UAT-driven fix release
+
+This release closes every issue logged in the [25 April 2025 UAT pass](UAT/25April_UAT%20Checklist.md) plus the free-form observations. Detailed root-cause analysis and per-fix verification are in [UAT/25April_UAT_Resolution_Plan.md](UAT/25April_UAT_Resolution_Plan.md).
+
+### Added
+
+- **`last_run_state` on sessions** — new `sessions.last_run_state TEXT NOT NULL DEFAULT 'idle'` column with state machine (`idle | running | completed | error`). Set to `running` in `submit_message` ([backend/app.py](backend/app.py)) and to a terminal state in the `_run` finally block. Surfaced on `SessionOut` so the frontend can detect an in-flight run on session mount and re-subscribe to the SSE bus. Resolves UAT 20.1–20.3 (multi-session run management).
+- **Multi-session SSE re-attach** — the session page in [frontend/app/sessions/[id]/page.tsx](frontend/app/sessions/%5Bid%5D/page.tsx) now reads `last_run_state` on mount and calls `attachStream()` automatically if the backend is still running. Persisted trace fills any gap that occurred while the user was away. EventSource is closed on unmount so navigating between sessions doesn't leak connections.
+- **Per-message document attachments** — new `messages.attached_document_ids_json` column. `MessageCreate` accepts `attached_document_ids: list[str]`; `MessageOut` exposes both `attached_document_ids` and a hydrated `attached_documents` (filenames). The session page passes `documents.map(d => d.id)` on every send / retry / edit, so user-bubble document chips re-render correctly after page reload. Resolves UAT 7.4.
+- **Typewriter completion callback** — `useTypewriter` in [frontend/components/ChatPane.tsx](frontend/components/ChatPane.tsx) now exposes an `onComplete` callback that fires exactly once per fully-revealed recap. The session page uses this to flush a deferred `run_complete` commit (held in `pendingCommitRef`) so the live streaming bubble is no longer unmounted mid-animation. Resolves UAT 9.1, 9.2, 9.3, 9.11 (typewriter never animated).
+- **`DELETE /api/sessions/{id}/documents/{id}` endpoint** — removes an uploaded document from a session. Returns 409 if the document is referenced by a persisted message (so chip rendering on past turns isn't broken). Trash icon appears on hover in the Session files popover ([frontend/components/SessionFiles.tsx](frontend/components/SessionFiles.tsx)). Closes the free-form "cannot delete uploaded session files" observation.
+- **Audience-mode banner in chat** — `ChatMessage.role` widened to include `"system"`, with a `systemKind: "audience_change"` variant rendered as a centred italic banner (`~ switched to layperson mode ~`). Banner is emitted on explicit toggle clicks and on prompt-inferred audience switches. Closes the free-form "show a switched-to-X banner" observation.
+- **Copy button in Artifact preview** — added between Download and Close in [frontend/components/ArtifactPreview.tsx](frontend/components/ArtifactPreview.tsx), with a 1.5 s ✓ confirmation. Closes the free-form "copy button alongside download and close" observation.
+- **Self-sizing artifact card** — [frontend/components/ArtifactCard.tsx](frontend/components/ArtifactCard.tsx) now uses `inline-flex max-w-sm` instead of `w-full`, and the wrapping container in `ChatPane` switched from `space-y-2 max-w-[90%]` to `flex flex-col items-start gap-2`. The card hugs its title up to ~24 rem and only then truncates. Closes the free-form "reduce artifact button size" observation.
+
+### Changed
+
+- **Audience prompts rebuilt for actual register diversity** — `_AUDIENCE_INSTRUCTIONS` in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) and the matching dictionary in [backend/orchestrator/subagent.py](backend/orchestrator/subagent.py) replaced the previous one-line hints with multi-paragraph briefs containing reader profile, forbidden vocabulary patterns, required vocabulary patterns, and a worked example for each level showing the same fact phrased three ways. The audience block was also **hoisted from the bottom of the system prompt to immediately after the opening paragraph**, which makes it load-bearing for the model. Total system prompt size grew from ~3.5 K to ~7 K characters per audience. Resolves UAT 14.2–14.4.
+- **Finalize-time audience self-check** — new `_AUDIENCE_FINALIZE_CHECK` block injected into the Lead system prompt instructing the model to re-read its `result` against the audience brief and rewrite any sentence that violates it (e.g. a layperson answer that smuggles in a section number).
+- **Cumulative context meter** — the `context_usage` event in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) now counts persisted session history (`get_messages()`) plus the in-flight Lead loop buffer, so the meter grows monotonically across turns and only dips on compaction. Previously it reset to ~5–10% on every new turn. Resolves UAT 16.2 and the related "token counter / context meter discrepancy" observation. The remaining gap between TokenCounter (which includes system + tools + doc index) and ContextMeter (which doesn't) is a known scope difference, not a bug.
+- **Subagent `agent_done` summary cap raised** — from 200 chars to 2000 chars in [backend/orchestrator/subagent.py](backend/orchestrator/subagent.py). The trace UI in [frontend/components/AgentTrace.tsx](frontend/components/AgentTrace.tsx) now shows an 80-char preview when the row is collapsed and the full text in a scrollable monospace block when expanded (replaced `line-clamp-3`). Resolves UAT 12.6.
+
+### Fixed
+
+- **Persisted `thinking` field is no longer empty after `finalize`** — [backend/orchestrator/event_bus.py](backend/orchestrator/event_bus.py) no longer wipes `_thinking_buffer` on `thinking_clear`. The `thinking_clear` event remains a UI-only signal (drop the live panel display); the server-side buffer is the historical record and must be preserved so the persisted assistant message has a non-empty `thinking` field. Resolves UAT 19.9 (collapsible past-turn thinking panel).
+- **Stream-close handler no longer races the typewriter** — the `onClose` callback in `attachStream` now early-returns if `pendingCommitRef.current` is set, so the stream-end refetch can't clobber the live streaming state while the typewriter is still revealing the recap.
+
+### Schema migrations (idempotent, run on first connection)
+
+- `ALTER TABLE sessions ADD COLUMN last_run_state TEXT NOT NULL DEFAULT 'idle'`
+- `ALTER TABLE messages ADD COLUMN attached_document_ids_json TEXT`
+
+Verified clean on the existing `deep_reading.db` (13 sessions preserved, both columns present after migration).
+
+### Verification
+
+- `python ast.parse` clean on all 6 edited backend files.
+- `tsc --noEmit` shows zero new errors in any edited frontend file (4 pre-existing CitationLink errors are out of scope).
+- `from backend.app import app` succeeds; route count grew 19 → 20 with the document-delete endpoint.
+- `_LEAD_SYSTEM` audience block now appears at character 361 (~6% into the prompt) for all three audiences, vs. trailing the prompt previously.
+
+Items still requiring live UAT (cannot be desk-verified): typewriter speed feel, audience output diversity (3-audience same-prompt comparison), multi-session re-attach end-to-end, and the previously-NA compaction flow.
+
+---
+
 ## [2.1.0] — 2026-04-22: Frontend Edits, Token Counter, Advisor Tool
 
 ### Added

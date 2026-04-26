@@ -37,21 +37,23 @@ _DDL_STATEMENTS = [
     "PRAGMA journal_mode=WAL",
     "PRAGMA foreign_keys=ON",
     """CREATE TABLE IF NOT EXISTS sessions (
-        id          TEXT PRIMARY KEY,
-        title       TEXT,
-        created_at  TEXT NOT NULL,
-        pinned      INTEGER NOT NULL DEFAULT 0,
-        audience    TEXT NOT NULL DEFAULT 'professional'
+        id              TEXT PRIMARY KEY,
+        title           TEXT,
+        created_at      TEXT NOT NULL,
+        pinned          INTEGER NOT NULL DEFAULT 0,
+        audience        TEXT NOT NULL DEFAULT 'professional',
+        last_run_state  TEXT NOT NULL DEFAULT 'idle'
     )""",
     """CREATE TABLE IF NOT EXISTS messages (
-        id               TEXT PRIMARY KEY,
-        session_id       TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        role             TEXT NOT NULL,
-        content          TEXT NOT NULL,
-        token_usage      INTEGER,
-        created_at       TEXT NOT NULL,
-        artifact_ids_json TEXT,
-        thinking         TEXT
+        id                          TEXT PRIMARY KEY,
+        session_id                  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        role                        TEXT NOT NULL,
+        content                     TEXT NOT NULL,
+        token_usage                 INTEGER,
+        created_at                  TEXT NOT NULL,
+        artifact_ids_json           TEXT,
+        thinking                    TEXT,
+        attached_document_ids_json  TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS documents (
         id                TEXT PRIMARY KEY,
@@ -144,6 +146,12 @@ async def _init_db(db: aiosqlite.Connection) -> None:
         await db.execute(
             "ALTER TABLE sessions ADD COLUMN audience TEXT NOT NULL DEFAULT 'professional'"
         )
+    if "last_run_state" not in cols:
+        # Track whether a run is in flight so the frontend can re-attach the
+        # SSE stream after a navigation away. Values: idle | running | completed | error.
+        await db.execute(
+            "ALTER TABLE sessions ADD COLUMN last_run_state TEXT NOT NULL DEFAULT 'idle'"
+        )
     # Migration: ensure documents has original_filename (falls back to filename).
     cursor = await db.execute("PRAGMA table_info(documents)")
     doc_cols = [r[1] for r in await cursor.fetchall()]
@@ -157,6 +165,12 @@ async def _init_db(db: aiosqlite.Connection) -> None:
         await db.execute("ALTER TABLE messages ADD COLUMN artifact_ids_json TEXT")
     if "thinking" not in msg_cols:
         await db.execute("ALTER TABLE messages ADD COLUMN thinking TEXT")
+    if "attached_document_ids_json" not in msg_cols:
+        # Per-message document attachments — preserves which documents the user
+        # attached *for that turn* so the chip render survives reloads.
+        await db.execute(
+            "ALTER TABLE messages ADD COLUMN attached_document_ids_json TEXT"
+        )
     await db.commit()
     _db_initialised = True
 
@@ -185,8 +199,8 @@ async def create_session(title: Optional[str] = None) -> dict:
     now = _now()
     async with get_db() as db:
         await db.execute(
-            "INSERT INTO sessions (id, title, created_at, pinned, audience) "
-            "VALUES (?, ?, ?, 0, 'professional')",
+            "INSERT INTO sessions (id, title, created_at, pinned, audience, last_run_state) "
+            "VALUES (?, ?, ?, 0, 'professional', 'idle')",
             (sid, title, now),
         )
         await db.commit()
@@ -196,6 +210,7 @@ async def create_session(title: Optional[str] = None) -> dict:
         "created_at": now,
         "pinned": False,
         "audience": "professional",
+        "last_run_state": "idle",
     }
 
 
@@ -208,6 +223,7 @@ async def get_session(session_id: str) -> Optional[dict]:
     data = dict(row)
     data["pinned"] = bool(data.get("pinned", 0))
     data["audience"] = data.get("audience") or "professional"
+    data["last_run_state"] = data.get("last_run_state") or "idle"
     return data
 
 
@@ -221,6 +237,7 @@ async def list_sessions() -> list[dict]:
         d = dict(r)
         d["pinned"] = bool(d.get("pinned", 0))
         d["audience"] = d.get("audience") or "professional"
+        d["last_run_state"] = d.get("last_run_state") or "idle"
         out.append(d)
     return out
 
@@ -230,8 +247,9 @@ async def update_session(
     title: Optional[str] = None,
     pinned: Optional[bool] = None,
     audience: Optional[str] = None,
+    last_run_state: Optional[str] = None,
 ) -> Optional[dict]:
-    """Update title, pinned flag, and/or audience. Returns refreshed session row or None."""
+    """Update title, pinned flag, audience, and/or last_run_state. Returns refreshed session row or None."""
     sets: list[str] = []
     vals: list = []
     if title is not None:
@@ -243,6 +261,9 @@ async def update_session(
     if audience is not None:
         sets.append("audience = ?")
         vals.append(audience)
+    if last_run_state is not None:
+        sets.append("last_run_state = ?")
+        vals.append(last_run_state)
     if not sets:
         return await get_session(session_id)
     vals.append(session_id)
@@ -262,6 +283,40 @@ async def delete_session(session_id: str) -> bool:
         deleted = (cursor.rowcount or 0) > 0
         await db.commit()
     return deleted
+
+
+async def delete_document(session_id: str, document_id: str) -> bool:
+    """Delete a document and its chunks (cascade). Scoped to a session so
+    cross-session deletes can't slip through. Returns False if not found."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "DELETE FROM documents WHERE id = ? AND session_id = ?",
+            (document_id, session_id),
+        )
+        deleted = (cursor.rowcount or 0) > 0
+        await db.commit()
+    return deleted
+
+
+async def document_referenced_by_message(session_id: str, document_id: str) -> bool:
+    """Return True if any persisted message in the session has this document
+    in its `attached_document_ids`. Used to surface a friendly 409 instead of
+    silently breaking chip rendering on past messages."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall(
+            "SELECT attached_document_ids_json FROM messages "
+            "WHERE session_id = ? AND attached_document_ids_json IS NOT NULL",
+            (session_id,),
+        )
+    for r in rows:
+        raw = r["attached_document_ids_json"]
+        try:
+            ids = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            ids = []
+        if document_id in ids:
+            return True
+    return False
 
 
 async def delete_messages_after(session_id: str, message_id: str) -> int:
@@ -297,16 +352,24 @@ async def add_message(
     token_usage: Optional[int] = None,
     artifact_ids: Optional[list[str]] = None,
     thinking: Optional[str] = None,
+    attached_document_ids: Optional[list[str]] = None,
 ) -> dict:
     mid = str(uuid.uuid4())
     now = _now()
     artifact_blob = json.dumps(artifact_ids) if artifact_ids else None
+    attached_blob = (
+        json.dumps(attached_document_ids) if attached_document_ids else None
+    )
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages "
-            "(id, session_id, role, content, token_usage, created_at, artifact_ids_json, thinking) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (mid, session_id, role, content, token_usage, now, artifact_blob, thinking),
+            "(id, session_id, role, content, token_usage, created_at, "
+            " artifact_ids_json, thinking, attached_document_ids_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                mid, session_id, role, content, token_usage, now,
+                artifact_blob, thinking, attached_blob,
+            ),
         )
         await db.commit()
     return {
@@ -318,6 +381,9 @@ async def add_message(
         "created_at": now,
         "artifact_ids": list(artifact_ids) if artifact_ids else [],
         "thinking": thinking,
+        "attached_document_ids": (
+            list(attached_document_ids) if attached_document_ids else []
+        ),
     }
 
 
@@ -327,6 +393,17 @@ async def get_messages(session_id: str) -> list[dict]:
             "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at",
             (session_id,),
         )
+        # Preload doc id → filename for this session so we can hydrate
+        # attached_documents (filenames) on each message in one pass instead
+        # of N+1 queries.
+        doc_rows = await db.execute_fetchall(
+            "SELECT id, original_filename, filename FROM documents WHERE session_id = ?",
+            (session_id,),
+        )
+    doc_name_by_id: dict[str, str] = {}
+    for dr in doc_rows:
+        d = dict(dr)
+        doc_name_by_id[d["id"]] = d.get("original_filename") or d.get("filename") or ""
     out = []
     for r in rows:
         d = dict(r)
@@ -335,6 +412,18 @@ async def get_messages(session_id: str) -> list[dict]:
             d["artifact_ids"] = json.loads(raw) if raw else []
         except (TypeError, ValueError):
             d["artifact_ids"] = []
+        attached_raw = d.pop("attached_document_ids_json", None)
+        try:
+            attached_ids = json.loads(attached_raw) if attached_raw else []
+        except (TypeError, ValueError):
+            attached_ids = []
+        d["attached_document_ids"] = attached_ids if isinstance(attached_ids, list) else []
+        # Resolve to filenames here so the frontend can render chips without
+        # cross-referencing the documents list. Fall back to the raw id if
+        # the document was deleted (so stale messages still render *something*).
+        d["attached_documents"] = [
+            doc_name_by_id.get(aid) or aid for aid in d["attached_document_ids"]
+        ]
         # `thinking` may already be present from SELECT *; normalize None → None.
         d["thinking"] = d.get("thinking")
         out.append(d)

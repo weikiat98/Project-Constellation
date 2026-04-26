@@ -21,13 +21,14 @@ import anthropic
 from backend.store.sessions import (
     get_documents,
     get_chunks_for_document,
+    get_messages,
     add_message,
     create_agent_run,
     finish_agent_run,
 )
 from backend.orchestrator.tools import LEAD_TOOLS, handle_tool
 from backend.orchestrator.subagent import run_subagent
-from backend.orchestrator.compactor import maybe_compact
+from backend.orchestrator.compactor import maybe_compact, _count_tokens_approx
 from backend.orchestrator.event_bus import SessionEventBus
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001") # change to claude-opus-4-6 for production and use claude-haiku-4-5-20251001 for testing
@@ -45,6 +46,11 @@ _LEAD_SYSTEM = """You are the Lead Orchestrator of Constellation, a multi-agent 
 Your job is to answer the user's question accurately and helpfully. When documents are
 uploaded, analyse them with maximum depth and citation fidelity. When no documents are
 uploaded, answer the user's question directly as a knowledgeable conversational assistant.
+
+## AUDIENCE: {audience} (READ THIS FIRST — IT GOVERNS EVERY WORD YOU WRITE)
+{audience_instruction}
+
+{audience_finalize_check}
 
 ## Workflow (when documents are available)
 1. Use search_document or read_document_chunk to understand the document structure.
@@ -139,18 +145,65 @@ When documents are uploaded, every factual claim drawn from them MUST include a
 [chunk_id] citation. Reject any subagent output that lacks citations — re-spawn the task.
 When no documents are uploaded, citations are not required — answer from your knowledge.
 
-## Audience: {audience}
-{audience_instruction}
-
 ## Context window
 You have ~200K tokens. If you see a compacted history, trust it and continue.
 """
 
 _AUDIENCE_INSTRUCTIONS = {
-    "layperson": "Explain everything in plain, everyday language. No jargon.",
-    "professional": "Use domain-appropriate terminology. Assume professional familiarity.",
-    "expert": "Use precise technical/legal language. Include full section references.",
+    "layperson": (
+        "TARGET READER: Someone with NO background in this domain — imagine "
+        "explaining to a curious friend, a family member, or a high-school student.\n\n"
+        "FORBIDDEN: Latin terms, statute/section numbers (e.g. 'Section 12(3)(a)'), "
+        "unexpanded acronyms, jargon, technical adjectives ('material', 'prima facie', "
+        "'pursuant to'), hedged legal/financial verbs ('shall', 'whereby', 'thereunder').\n\n"
+        "REQUIRED: Short sentences (≤20 words). Concrete nouns. Everyday verbs. "
+        "When you must mention a technical concept, paraphrase it first, then optionally "
+        "name it in parentheses. Active voice. Second person ('you') is fine.\n\n"
+        "WORKED EXAMPLE — same fact, layperson register:\n"
+        "  ❌ 'Pursuant to Section 12(3)(a), the lessee shall remit consideration "
+        "    on a quarterly basis.'\n"
+        "  ✅ 'You have to pay the rent every three months.'"
+    ),
+    "professional": (
+        "TARGET READER: A working professional in the field — assume they know "
+        "the basics but appreciate clarity. Think: a junior lawyer, an analyst, "
+        "a product manager reading a domain document.\n\n"
+        "REQUIRED: Domain-appropriate terminology used correctly. Acronyms expanded "
+        "on first use, then abbreviated. Section/clause references where they aid "
+        "navigation, but not as a substitute for explanation. Balanced sentences "
+        "(15–30 words). Light structure (bold labels, short bullets) when it helps.\n\n"
+        "AVOID: Both ends of the register — neither dumbed-down chatty prose nor "
+        "dense expert-only Latin. Default to plain English unless precision demands a term.\n\n"
+        "WORKED EXAMPLE — same fact, professional register:\n"
+        "  ✅ 'The lease requires quarterly rent payments (Section 12(3)(a)). "
+        "     Late payments trigger the default-interest clause.'"
+    ),
+    "expert": (
+        "TARGET READER: A subject-matter expert — counsel, senior analyst, "
+        "domain specialist. They want precision, not pedagogy.\n\n"
+        "REQUIRED: Full statutory / clause / section citations in their canonical "
+        "form ('Section 12(3)(a) of the Act'). Domain Latin where it carries "
+        "specific meaning ('mutatis mutandis', 'pari passu', 'force majeure'). "
+        "Distinguish operative vs. interpretive provisions. Surface ambiguities, "
+        "exceptions, and cross-references explicitly. Use the document's own "
+        "defined terms verbatim (capitalised as defined).\n\n"
+        "AVOID: Paraphrasing terms that have a defined meaning in the document. "
+        "Avoid laypeople-friendly 'in other words' restatements.\n\n"
+        "WORKED EXAMPLE — same fact, expert register:\n"
+        "  ✅ 'Section 12(3)(a) imposes a quarterly rent obligation on the Lessee, "
+        "     subject to the default-interest mechanism in Section 18(2) and the "
+        "     force-majeure carve-out in Section 24.'"
+    ),
 }
+
+
+_AUDIENCE_FINALIZE_CHECK = (
+    "BEFORE calling `finalize`, re-read your `result` against the AUDIENCE brief "
+    "above. If audience=layperson and you used a section number, Latin term, or "
+    "unexpanded acronym, REWRITE that sentence in plain English. If audience=expert "
+    "and you wrote a generic word like 'rule' or 'clause' instead of the precise "
+    "statutory reference, REWRITE it. Audience compliance is non-negotiable."
+)
 
 
 def _build_tools(use_advisor: bool) -> tuple[list[dict], list[str]]:
@@ -208,7 +261,9 @@ async def run_lead(
 
     audience_instruction = _AUDIENCE_INSTRUCTIONS.get(audience, _AUDIENCE_INSTRUCTIONS["professional"])
     system_prompt = _LEAD_SYSTEM.format(
-        audience=audience, audience_instruction=audience_instruction
+        audience=audience,
+        audience_instruction=audience_instruction,
+        audience_finalize_check=_AUDIENCE_FINALIZE_CHECK,
     )
 
     if doc_context_parts:
@@ -245,8 +300,18 @@ async def run_lead(
         if compacted:
             pass  # bus already published compaction_done
 
-        # Current token estimate
-        est_tokens = sum(len(str(m)) // 4 for m in messages)
+        # Cumulative context estimate: persisted session history + the in-flight
+        # Lead loop buffer. Persisted history is the source of truth for "how
+        # much of the window is committed"; the loop buffer captures live tool
+        # results / subagent output that haven't been saved yet. Together they
+        # grow monotonically across turns and only dip on compaction — matching
+        # what users expect from a context meter.
+        persisted = await get_messages(session_id)
+        persisted_tokens = _count_tokens_approx(
+            [{"role": m["role"], "content": m["content"]} for m in persisted]
+        )
+        live_tokens = sum(len(str(m)) // 4 for m in messages)
+        est_tokens = persisted_tokens + live_tokens
         bus.publish(
             "context_usage",
             tokens=est_tokens,

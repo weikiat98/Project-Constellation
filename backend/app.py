@@ -47,8 +47,10 @@ from backend.store.documents import DocumentStore
 from backend.store.sessions import (
     add_message,
     create_session,
+    delete_document,
     delete_messages_after,
     delete_session,
+    document_referenced_by_message,
     get_artifact,
     get_artifacts,
     get_chunks_for_document,
@@ -63,7 +65,7 @@ from backend.store.sessions import (
 from backend.extractors.definitions import extract_definitions
 from backend.extractors.cross_refs import extract_cross_refs
 
-app = FastAPI(title="Constellation", version="1.0.0")
+app = FastAPI(title="Constellation", version="1.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -176,6 +178,29 @@ async def upload_document(session_id: str, file: UploadFile = File(...)):
     )
 
 
+@app.delete("/api/sessions/{session_id}/documents/{document_id}", status_code=200)
+async def delete_document_endpoint(session_id: str, document_id: str):
+    """Remove an uploaded document from a session.
+
+    Refuses if the document is referenced by a persisted message — deleting it
+    would leave stale chip references on past turns. Frontend can surface the
+    409 as a "this document is attached to a previous message" message.
+    """
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if await document_referenced_by_message(session_id, document_id):
+        raise HTTPException(
+            409,
+            "Document is attached to a previous message and cannot be deleted. "
+            "Delete the messages that reference it first, or start a new chat.",
+        )
+    ok = await delete_document(session_id, document_id)
+    if not ok:
+        raise HTTPException(404, "Document not found")
+    return {"deleted": ok}
+
+
 # ─── Messages / agent runs ───────────────────────────────────────────────────
 
 def _derive_title(text: str, max_len: int = 60) -> str:
@@ -193,8 +218,14 @@ async def submit_message(session_id: str, body: MessageCreate):
     if not session:
         raise HTTPException(404, "Session not found")
 
-    # Persist user message
-    user_msg = await add_message(session_id, "user", body.content)
+    # Persist user message — record which documents the user attached to this
+    # specific turn so chips re-render correctly after a page reload.
+    user_msg = await add_message(
+        session_id,
+        "user",
+        body.content,
+        attached_document_ids=body.attached_document_ids or None,
+    )
 
     # Auto-title: if this is the session's first user message and no title set.
     if not session.get("title"):
@@ -212,15 +243,27 @@ async def submit_message(session_id: str, body: MessageCreate):
     run_index = await next_trace_run_index(session_id)
     bus.bind_persistence(session_id, run_index)
 
+    # Mark the session as running so any client that lands on the page (or
+    # comes back from another session) knows to re-attach the SSE stream.
+    await update_session(session_id, last_run_state="running")
+
     # Kick off agent run as a background task
     async def _run():
+        final_state = "completed"
         try:
             await run_lead(session_id, body.content, bus, body.audience)
         except Exception as exc:
+            final_state = "error"
             bus.publish("error", message=str(exc))
         finally:
             bus.close()
             event_registry.close(session_id)
+            # Best-effort: record terminal state so re-mounted sessions see
+            # `idle/completed/error` instead of getting stuck in `running`.
+            try:
+                await update_session(session_id, last_run_state=final_state)
+            except Exception:
+                pass
 
     asyncio.create_task(_run())
 

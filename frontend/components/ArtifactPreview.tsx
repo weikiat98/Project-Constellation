@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X, Download } from "lucide-react";
+import { X, Download, Copy, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Artifact } from "@/lib/api";
@@ -69,7 +69,19 @@ function parseCsv(text: string): string[][] {
 export default function ArtifactPreview({ artifact, onClose, onCitationClick }: Props) {
   const [width, setWidth] = useState<number>(640);
   const [dragging, setDragging] = useState(false);
+  const [copied, setCopied] = useState(false);
   const rafRef = useRef<number | null>(null);
+
+  const copy = useCallback(async () => {
+    if (!artifact) return;
+    try {
+      await navigator.clipboard.writeText(artifact.content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can fail in iframes / insecure contexts. Silent.
+    }
+  }, [artifact]);
 
   // Load persisted width once on mount.
   useEffect(() => {
@@ -164,6 +176,17 @@ export default function ArtifactPreview({ artifact, onClose, onCitationClick }: 
           </span>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={copy}
+            title={copied ? "Copied" : "Copy"}
+            className="p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-[#1a1d27] transition"
+          >
+            {copied ? (
+              <Check className="w-4 h-4 text-emerald-400" />
+            ) : (
+              <Copy className="w-4 h-4" />
+            )}
+          </button>
           <button
             onClick={() => downloadArtifact(artifact)}
             title="Download"

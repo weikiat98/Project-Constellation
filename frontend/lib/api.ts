@@ -6,12 +6,17 @@ const BASE = "/api";
 
 export type Audience = "layperson" | "professional" | "expert";
 
+export type RunState = "idle" | "running" | "completed" | "error";
+
 export interface Session {
   id: string;
   title: string | null;
   created_at: string;
   pinned?: boolean;
   audience?: Audience;
+  // Tracks whether a run is in flight on the backend so the frontend can
+  // re-subscribe to the SSE stream when remounting after a navigation.
+  last_run_state?: RunState;
 }
 
 export interface Message {
@@ -23,6 +28,10 @@ export interface Message {
   created_at: string;
   artifact_ids?: string[];
   thinking?: string | null;
+  // Document IDs attached to this specific turn (persisted, chip-rendering).
+  attached_document_ids?: string[];
+  // Resolved filenames for the attachments — used by the chat bubble chip UI.
+  attached_documents?: string[];
 }
 
 export interface Document {
@@ -124,11 +133,26 @@ export const api = {
     });
   },
 
+  deleteDocument: (sessionId: string, documentId: string) =>
+    request<{ deleted: boolean }>(
+      `/sessions/${sessionId}/documents/${documentId}`,
+      { method: "DELETE" }
+    ),
+
   // Messages
-  sendMessage: (sessionId: string, content: string, audience: Audience = "professional") =>
+  sendMessage: (
+    sessionId: string,
+    content: string,
+    audience: Audience = "professional",
+    attachedDocumentIds: string[] = []
+  ) =>
     request<Message>(`/sessions/${sessionId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, audience }),
+      body: JSON.stringify({
+        content,
+        audience,
+        attached_document_ids: attachedDocumentIds,
+      }),
     }),
 
   // Context

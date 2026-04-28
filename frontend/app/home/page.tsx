@@ -229,11 +229,11 @@ export default function HomePage() {
                   <input
                     ref={fileRef}
                     type="file"
+                    multiple
                     className="hidden"
                     accept=".pdf,.docx,.txt,.md,.html"
                     onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handleUpload(f);
+                      if (e.target.files?.length) handleFiles(e.target.files);
                       e.target.value = "";
                     }}
                   />

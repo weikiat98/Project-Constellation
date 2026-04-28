@@ -216,9 +216,7 @@ export default function ArtifactPreview({ artifact, onClose, onCitationClick }: 
         ) : mime === "text/csv" ? (
           <CsvTable text={artifact.content} />
         ) : mime === "text/plain" ? (
-          <pre className="p-6 text-xs text-slate-200 whitespace-pre-wrap break-words font-mono leading-relaxed">
-            {artifact.content}
-          </pre>
+          <PlainTextWithCitations content={artifact.content} onCitation={handleCitation} />
         ) : (
           <div className="prose prose-sm prose-invert max-w-none p-6">
             <ReactMarkdown
@@ -237,6 +235,26 @@ export default function ArtifactPreview({ artifact, onClose, onCitationClick }: 
         )}
       </div>
     </aside>
+  );
+}
+
+function PlainTextWithCitations({
+  content,
+  onCitation,
+}: {
+  content: string;
+  onCitation: (id: string) => void;
+}) {
+  const lines = content.split("\n");
+  return (
+    <pre className="p-6 text-xs text-slate-200 whitespace-pre-wrap break-words font-mono leading-relaxed">
+      {lines.map((line, li) => (
+        <span key={li}>
+          {injectCitations(line, onCitation)}
+          {li < lines.length - 1 && "\n"}
+        </span>
+      ))}
+    </pre>
   );
 }
 

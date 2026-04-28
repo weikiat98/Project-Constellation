@@ -36,63 +36,8 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const CITATION_RE = new RegExp(`\\[(${UUID}(?:\\s*[,;]\\s*${UUID})*)\\]`, "g");
 const UUID_RE = new RegExp(UUID, "g");
 
-// Typewriter reveal: `final_message` arrives as a single complete string, so we
-// animate it character-by-character on the client for a streamed feel. Paced
-// to reveal a ~500-word recap in ~8–10s — fast enough to not feel sluggish,
-// slow enough that the user can read as it types.
-const TYPEWRITER_CHARS_PER_TICK = 3;
-const TYPEWRITER_INTERVAL_MS = 20;
-
-function useTypewriter(
-  target: string,
-  enabled: boolean,
-  onComplete?: () => void
-): string {
-  const [displayed, setDisplayed] = useState("");
-  const prevTargetRef = useRef("");
-  // Track whether we've fired the completion callback for the current target,
-  // so a second pass at the same length doesn't re-fire it.
-  const completedForRef = useRef("");
-
-  useEffect(() => {
-    if (!enabled) {
-      // Not streaming — snap to full text so finalized messages aren't animated.
-      setDisplayed(target);
-      prevTargetRef.current = target;
-      completedForRef.current = target;
-      return;
-    }
-    // If target shrank (new stream starting) or is empty, reset.
-    if (!target.startsWith(prevTargetRef.current)) {
-      setDisplayed("");
-      completedForRef.current = "";
-    }
-    prevTargetRef.current = target;
-  }, [target, enabled]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    if (displayed.length >= target.length) {
-      // We've caught up. Fire onComplete exactly once per target so the parent
-      // can flush the deferred run_complete commit when the user has finished
-      // reading the typed-out recap.
-      if (target.length > 0 && completedForRef.current !== target) {
-        completedForRef.current = target;
-        onComplete?.();
-      }
-      return;
-    }
-    const handle = window.setInterval(() => {
-      setDisplayed((prev) => {
-        if (prev.length >= target.length) return prev;
-        return target.slice(0, prev.length + TYPEWRITER_CHARS_PER_TICK);
-      });
-    }, TYPEWRITER_INTERVAL_MS);
-    return () => window.clearInterval(handle);
-  }, [target, displayed.length, enabled, onComplete]);
-
-  return displayed;
-}
+// No client-side typewriter needed: the backend now streams `text_delta`
+// events incrementally, so `streamingText` grows in real time as chunks arrive.
 
 // Context passed through markdown rendering so a text node knows how to decorate
 // itself: citations (always) + search highlights (when a query is active).
@@ -263,10 +208,8 @@ interface Props {
   onArtifactPreview?: (artifact: Artifact) => void;
   onRetry?: (assistantMessageId: string) => void;
   onEdit?: (userMessageId: string, newContent: string) => void;
-  onDropFile?: (file: File) => void;
-  // Fired exactly once per streamed recap, when the typewriter has revealed
-  // the full text. The parent uses this to flush the deferred `run_complete`
-  // commit so the live bubble isn't unmounted mid-animation.
+  onDropFile?: (files: FileList) => void;
+  // Called once when final_message is received and text is fully displayed.
   onTypewriterComplete?: () => void;
 
   // Context meter
@@ -323,7 +266,6 @@ export default function ChatPane({
   onRetry,
   onEdit,
   onDropFile,
-  onTypewriterComplete,
   liveContextPercent,
   onCompact,
   compacting,
@@ -341,15 +283,9 @@ export default function ChatPane({
   const plusRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
-  // Progressively reveal the recap. The backend sends `final_message` as one
-  // complete string, so animate it client-side for a smooth streamed feel.
-  // The onComplete callback is what gates `run_complete` commit upstream — it
-  // fires exactly once per fully-revealed recap.
-  const typedStreamingText = useTypewriter(
-    streamingText,
-    isStreaming,
-    onTypewriterComplete
-  );
+  // No typewriter: text arrives via real text_delta events; commit is handled
+  // by the session page on run_complete. The onTypewriterComplete prop is kept
+  // as a safety shim but does not need to be triggered from here.
 
   // Debounced token-count fetch: recomputes ~400ms after the user stops typing,
   // also refreshes when the document set changes (new upload → larger base).
@@ -513,7 +449,7 @@ export default function ChatPane({
             </div>
             <div className="flex-1 min-w-0 space-y-3">
               {/* Live thinking panel (collapsible) — visible while agents work. */}
-              {(thinkingText || !typedStreamingText) && (
+              {(thinkingText || !streamingText) && (
                 <ThinkingPanel
                   text={thinkingText}
                   live
@@ -521,7 +457,7 @@ export default function ChatPane({
                 />
               )}
 
-              {typedStreamingText ? (
+              {streamingText ? (
                 <>
                   <div className="text-sm leading-relaxed text-slate-200">
                     <div className="prose prose-sm prose-invert max-w-none">
@@ -535,7 +471,7 @@ export default function ChatPane({
                           currentMatchIndex: -1,
                         })}
                       >
-                        {typedStreamingText}
+                        {streamingText}
                       </ReactMarkdown>
                     </div>
                     <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom" />
@@ -585,8 +521,7 @@ export default function ChatPane({
           if (!onDropFile) return;
           e.preventDefault();
           setDragOver(false);
-          const file = e.dataTransfer.files[0];
-          if (file) onDropFile(file);
+          if (e.dataTransfer.files.length > 0) onDropFile(e.dataTransfer.files);
         }}
       >
         <div className={`bg-[#1a1d27] rounded-xl border px-3 py-2 focus-within:border-blue-500/40 transition ${

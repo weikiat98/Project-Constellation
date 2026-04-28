@@ -16,13 +16,17 @@ export default function UploadZone({ sessionId, onUploaded }: Props) {
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleFile(file: File) {
+  async function handleFiles(files: FileList | File[]) {
+    const list = Array.from(files);
+    if (list.length === 0) return;
     setUploading(true);
     setError(null);
     setDone(false);
     try {
-      const doc = await api.uploadDocument(sessionId, file);
-      onUploaded(doc);
+      for (const file of list) {
+        const doc = await api.uploadDocument(sessionId, file);
+        onUploaded(doc);
+      }
       setDone(true);
       setTimeout(() => setDone(false), 3000);
     } catch (e: unknown) {
@@ -35,8 +39,7 @@ export default function UploadZone({ sessionId, onUploaded }: Props) {
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
+    if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
   }
 
   return (
@@ -54,9 +57,10 @@ export default function UploadZone({ sessionId, onUploaded }: Props) {
       <input
         ref={inputRef}
         type="file"
+        multiple
         className="hidden"
         accept=".pdf,.docx,.txt,.md,.html"
-        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+        onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ""; }}
       />
       {uploading ? (
         <div className="flex flex-col items-center gap-2 text-slate-400">
@@ -74,7 +78,7 @@ export default function UploadZone({ sessionId, onUploaded }: Props) {
             <Upload className="w-5 h-5" />
             <FileText className="w-5 h-5" />
           </div>
-          <span className="text-sm font-medium text-slate-300">Drop a file or click to upload</span>
+          <span className="text-sm font-medium text-slate-300">Drop files or click to upload</span>
           <span className="text-xs">PDF · DOCX · TXT · MD · HTML</span>
           {error && <span className="text-xs text-red-400 mt-1">{error}</span>}
         </div>

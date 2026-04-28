@@ -56,10 +56,9 @@ export async function downloadArtifact(a: Artifact) {
     a.mime_type === "text/html" ? "html" :
     a.mime_type === "text/csv" ? "csv" :
     a.mime_type === "text/plain" ? "txt" : "md";
-  // CSV + plain text are treated as raw content — citation resolution only
-  // applies to prose formats (markdown, html) where [chunk_id] links appear.
-  const rawFormats = new Set(["text/csv", "text/plain"]);
-  const content = rawFormats.has(a.mime_type) ? a.content : await resolveCitations(a.content);
+  // CSV is raw content; all other formats (plain text, markdown, html) can
+  // contain [chunk_id] citations that should be resolved before download.
+  const content = a.mime_type === "text/csv" ? a.content : await resolveCitations(a.content);
   const blob = new Blob([content], { type: a.mime_type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");

@@ -17,6 +17,58 @@ import SessionFiles from "@/components/SessionFiles";
 let _uid = 0;
 function uid() { return String(++_uid); }
 
+// Convert a raw server message to ChatMessage shape.
+function mapServerMessage(m: {
+  id: string;
+  role: string;
+  content: string;
+  artifact_ids?: string[];
+  thinking?: string;
+  attached_documents?: string[];
+}): ChatMessage {
+  return {
+    id: m.id,
+    role: m.role as "user" | "assistant",
+    content: m.content,
+    artifactIds: m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
+    thinking: m.thinking || undefined,
+    attachedDocs: m.attached_documents && m.attached_documents.length ? m.attached_documents : undefined,
+  };
+}
+
+// Merge server messages with transient system banners from current local state.
+// Each system banner is re-inserted just before the same next persisted message
+// it preceded before the refresh, so audience-change labels stay in place.
+function mergeWithBanners(prev: ChatMessage[], serverMsgs: ChatMessage[]): ChatMessage[] {
+  // Collect banners alongside the ID of the persisted message that followed each one.
+  const banners: Array<{ banner: ChatMessage; nextPersistedId: string | null }> = [];
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i].role === "system") {
+      // Find the first non-system message after this banner.
+      let nextId: string | null = null;
+      for (let j = i + 1; j < prev.length; j++) {
+        if (prev[j].role !== "system") { nextId = prev[j].id; break; }
+      }
+      banners.push({ banner: prev[i], nextPersistedId: nextId });
+    }
+  }
+  if (banners.length === 0) return serverMsgs;
+
+  const result: ChatMessage[] = [];
+  for (const msg of serverMsgs) {
+    // Insert any banners that should appear just before this message.
+    for (const { banner, nextPersistedId } of banners) {
+      if (nextPersistedId === msg.id) result.push(banner);
+    }
+    result.push(msg);
+  }
+  // Banners with no following persisted message (appended at the end) go last.
+  for (const { banner, nextPersistedId } of banners) {
+    if (nextPersistedId === null) result.push(banner);
+  }
+  return result;
+}
+
 // Detect explicit audience signals in a prompt. Returns the inferred audience
 // or null if the prompt contains no explicit instruction.
 // Only fires on clear, unambiguous phrasings so casual language doesn't
@@ -113,11 +165,8 @@ export default function SessionPage() {
   const [titleDraft, setTitleDraft] = useState("");
 
   const stopRef = useRef<(() => void) | null>(null);
+  const uploadCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didAttachInitial = useRef(false);
-  // Holds a deferred commit triggered by `run_complete`. The actual flush
-  // (setMessages + clear streamingText) waits until the typewriter has
-  // finished revealing the recap so the live bubble isn't unmounted
-  // mid-animation. See P1-1 in the v2.1 resolution plan.
   const pendingCommitRef = useRef<(() => void) | null>(null);
 
   const attachStream = useCallback(() => {
@@ -209,48 +258,23 @@ export default function SessionPage() {
             setTraceEntries((p) => [...p, { id: uid(), type: "compaction_done", timestamp: Date.now(), before_tokens: event.before_tokens, after_tokens: event.after_tokens }]);
             break;
           case "run_complete":
-            // Defer the commit: the typewriter is still revealing the recap.
-            // If we replaced the live streaming bubble with the persisted
-            // bubble right now, the typewriter would unmount before it had a
-            // chance to animate. Instead, capture the authoritative state in
-            // a closure and only flush it when the typewriter signals done.
+            // With real server-side streaming, all text_delta events have
+            // already arrived before run_complete fires, so we can commit
+            // immediately — no typewriter deferral needed.
             api.getSession(sessionId).then((d) => {
-              const flush = () => {
-                setSession(d.session);
-                setArtifacts(d.artifacts);
-                setMessages(
-                  d.messages.map((m) => ({
-                    id: m.id,
-                    role: m.role as "user" | "assistant",
-                    content: m.content,
-                    artifactIds:
-                      m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
-                    thinking: m.thinking || undefined,
-                    attachedDocs:
-                      m.attached_documents && m.attached_documents.length
-                        ? m.attached_documents
-                        : undefined,
-                  }))
-                );
-                accumulatedText = "";
-                accumulatedThinking = "";
-                runArtifactIds.length = 0;
-                setRunArtifactIds([]);
-                setStreamingText("");
-                setThinkingText("");
-                setIsStreaming(false);
-              };
-              // If there's no recap to type out (rare — empty finalize), flush
-              // immediately. Otherwise stash the flush and wait for the
-              // typewriter callback to invoke it.
-              if (!accumulatedText) {
-                flush();
-              } else {
-                pendingCommitRef.current = flush;
-              }
+              setSession(d.session);
+              setArtifacts(d.artifacts);
+              setMessages((prev) =>
+                mergeWithBanners(prev, d.messages.map(mapServerMessage))
+              );
+              accumulatedText = "";
+              accumulatedThinking = "";
+              runArtifactIds.length = 0;
+              setRunArtifactIds([]);
+              setStreamingText("");
+              setThinkingText("");
+              setIsStreaming(false);
             }).catch(() => {
-              // Refetch failed — fall back to clearing the stream-only state
-              // so the user isn't stuck on a permanent typing cursor.
               accumulatedText = "";
               accumulatedThinking = "";
               runArtifactIds.length = 0;
@@ -270,30 +294,13 @@ export default function SessionPage() {
         }
       },
       () => {
-        // Stream closed — source-of-truth is the backend. If `run_complete`
-        // already arrived, the deferred-commit ref (pendingCommitRef) is
-        // either still queued (typewriter still running) or already flushed.
-        // Don't stomp on the live streaming state in either case — the commit
-        // path will clear it when the typewriter is done. We only need to
-        // refetch + flush if `run_complete` never arrived (e.g. the EventSource
-        // dropped on a network blip).
+        // Stream closed without run_complete (e.g. network blip) — refetch.
         if (pendingCommitRef.current) return;
         api.getSession(sessionId).then((d) => {
           setSession(d.session);
           setArtifacts(d.artifacts);
-          setMessages(
-            d.messages.map((m) => ({
-              id: m.id,
-              role: m.role as "user" | "assistant",
-              content: m.content,
-              artifactIds:
-                m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
-              thinking: m.thinking || undefined,
-              attachedDocs:
-                m.attached_documents && m.attached_documents.length
-                  ? m.attached_documents
-                  : undefined,
-            }))
+          setMessages((prev) =>
+            mergeWithBanners(prev, d.messages.map(mapServerMessage))
           );
         }).catch(() => {});
         setStreamingText("");
@@ -311,18 +318,8 @@ export default function SessionPage() {
     api.getSession(sessionId).then((detail) => {
       setSession(detail.session);
       if (detail.session.audience) setAudience(detail.session.audience);
-      setMessages(
-        detail.messages.map((m) => ({
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          artifactIds: m.artifact_ids && m.artifact_ids.length ? m.artifact_ids : undefined,
-          thinking: m.thinking || undefined,
-          attachedDocs:
-            m.attached_documents && m.attached_documents.length
-              ? m.attached_documents
-              : undefined,
-        }))
+      setMessages((prev) =>
+        mergeWithBanners(prev, detail.messages.map(mapServerMessage))
       );
       setDocuments(detail.documents);
       setArtifacts(detail.artifacts);
@@ -524,15 +521,11 @@ export default function SessionPage() {
     }
   }, [messages, sessionId, audience, isStreaming, attachStream, documents]);
 
-  // Fired by ChatPane when the typewriter has revealed the full recap. If
-  // `run_complete` already arrived and stashed a deferred flush, run it now
-  // so the live bubble hands off to the persisted bubble cleanly.
+  // No-op: commit now happens immediately on run_complete. Kept as a safety
+  // shim in case a stale deferred flush was queued (e.g. race on reconnect).
   const handleTypewriterComplete = useCallback(() => {
     const pending = pendingCommitRef.current;
-    if (pending) {
-      pendingCommitRef.current = null;
-      pending();
-    }
+    if (pending) { pendingCommitRef.current = null; pending(); }
   }, []);
 
   const previewOpen = !!previewArtifact;
@@ -645,12 +638,14 @@ export default function SessionPage() {
             onArtifactPreview={setPreviewArtifact}
             onRetry={handleRetry}
             onEdit={handleEdit}
-            onDropFile={async (file) => {
-              try {
-                const doc = await api.uploadDocument(sessionId, file);
-                setDocuments((prev) => [...prev, doc]);
-              } catch {
-                // Upload failures surface via the next session refresh.
+            onDropFile={async (files) => {
+              for (const file of Array.from(files)) {
+                try {
+                  const doc = await api.uploadDocument(sessionId, file);
+                  setDocuments((prev) => [...prev, doc]);
+                } catch {
+                  // Upload failures surface via the next session refresh.
+                }
               }
             }}
             onTypewriterComplete={handleTypewriterComplete}
@@ -702,7 +697,10 @@ export default function SessionPage() {
                 sessionId={sessionId}
                 onUploaded={(doc) => {
                   setDocuments((prev) => [...prev, doc]);
-                  setTimeout(() => setUploadOpen(false), 800);
+                  // Debounce close: reset the timer on each file so the modal
+                  // stays open until all uploads in a multi-file batch finish.
+                  if (uploadCloseTimerRef.current) clearTimeout(uploadCloseTimerRef.current);
+                  uploadCloseTimerRef.current = setTimeout(() => setUploadOpen(false), 800);
                 }}
               />
               {documents.length > 0 && (

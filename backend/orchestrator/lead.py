@@ -31,7 +31,11 @@ from backend.orchestrator.subagent import run_subagent
 from backend.orchestrator.compactor import maybe_compact, _count_tokens_approx
 from backend.orchestrator.event_bus import SessionEventBus
 
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001") # change to claude-opus-4-6 for production and use claude-haiku-4-5-20251001 for testing
+# change to claude-opus-4-6 for production and use claude-sonnet-4-6 for testing. 
+# claude-haiku-4-5-20251001 is cost-effective for development but might face issue distinguishing different target audience 
+# (layperson/professional/expert) due to its smaller context window and lower capacity, which can lead to audience-inappropriate 
+# responses. If you see the model struggling with register or missing citations, switch to a more capable model.
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6") 
 WINDOW = 200_000
 
 # Advisor model — set to empty string to disable the advisor tool entirely
@@ -171,7 +175,7 @@ _AUDIENCE_INSTRUCTIONS = {
         "REQUIRED: Domain-appropriate terminology used correctly. Acronyms expanded "
         "on first use, then abbreviated. Section/clause references where they aid "
         "navigation, but not as a substitute for explanation. Balanced sentences "
-        "(15–30 words). Light structure (bold labels, short bullets) when it helps.\n\n"
+        "(20–40 words). Light structure (bold labels, short bullets) when it helps.\n\n"
         "AVOID: Both ends of the register — neither dumbed-down chatty prose nor "
         "dense expert-only Latin. Default to plain English unless precision demands a term.\n\n"
         "WORKED EXAMPLE — same fact, professional register:\n"
@@ -286,7 +290,16 @@ async def run_lead(
     # Shared kwargs for every API call — switches between beta and standard
     # client depending on whether the advisor tool is active.
     _system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+    # Adaptive thinking: Claude decides when/how much to reason based on
+    # request complexity. Supported on claude-sonnet-4-6 and claude-opus-4-7.
+    # Interleaved thinking is automatically enabled, so Claude can reason
+    # between tool calls — ideal for multi-step agentic workflows.
+    _thinking: dict | None = (
+        {"type": "adaptive"} if MODEL in ("claude-sonnet-4-6", "claude-opus-4-7") else None
+    )
     _common: dict = dict(model=MODEL, max_tokens=64000, system=_system, tools=tools)
+    if _thinking:
+        _common["thinking"] = _thinking
     _stream_fn = (
         lambda **kw: client.beta.messages.stream(**kw, betas=betas)
         if use_advisor
@@ -320,12 +333,21 @@ async def run_lead(
         )
 
         async with _stream_fn(**_common, messages=messages) as stream:
-            # Lead prose between tool calls is planning/reasoning, not the
-            # user-facing answer — stream it as `thinking_delta` so the UI can
-            # route it into a separate "Thinking…" panel. The actual chat
-            # message is delivered via the `finalize` tool below.
-            async for text_chunk in stream.text_stream:
-                bus.publish("thinking_delta", agent_id=lead_run_id, delta=text_chunk)
+            # Stream thinking and text blocks as they arrive.
+            # With adaptive thinking enabled, the model emits thinking blocks
+            # (routed to the Thinking panel) and text blocks (inter-tool
+            # planning prose, also routed to Thinking — the real user-facing
+            # answer is delivered by the `finalize` tool below).
+            async for event in stream:
+                event_type = getattr(event, "type", None)
+                if event_type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    delta_type = getattr(delta, "type", None)
+                    if delta_type == "thinking_delta" and hasattr(delta, "thinking"):
+                        bus.publish("thinking_delta", agent_id=lead_run_id, delta=delta.thinking)
+                    elif delta_type == "text_delta" and hasattr(delta, "text"):
+                        # Between-tool prose is internal planning, not the final answer.
+                        bus.publish("thinking_delta", agent_id=lead_run_id, delta=delta.text)
             response = await stream.get_final_message()
 
         tokens_in += response.usage.input_tokens
@@ -406,13 +428,14 @@ async def run_lead(
                         f"and let me know if you'd like me to dig deeper into any specific section."
                     )
                     final_answer = final_answer or fallback
-                # Clear any streamed thinking prose so the final answer isn't
-                # duplicated in the thinking panel when we stream it below.
+                # Clear the thinking panel, then stream the final answer as
+                # real text_delta chunks so the frontend renders incrementally
+                # without needing a fake client-side typewriter.
                 bus.publish("thinking_clear", agent_id=lead_run_id)
-                # Emit the final answer as a single event. The client-side
-                # typewriter in ChatPane animates the reveal — chunking on the
-                # server as well made the two mechanisms fight each other and
-                # collapsed the animation to an instant snap.
+                _CHUNK = 20  # characters per delta event
+                for i in range(0, len(final_answer), _CHUNK):
+                    bus.publish("text_delta", agent_id=lead_run_id, delta=final_answer[i:i + _CHUNK])
+                    await asyncio.sleep(0.015)  # ~15ms between chunks so SSE consumer can flush each delta
                 bus.publish("final_message", content=final_answer)
                 bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)

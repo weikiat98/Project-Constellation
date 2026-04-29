@@ -6,7 +6,7 @@ const BASE = "/api";
 
 export type Audience = "layperson" | "professional" | "expert";
 
-export type RunState = "idle" | "running" | "completed" | "error";
+export type RunState = "idle" | "running" | "completed" | "error" | "cancelled";
 
 export interface Session {
   id: string;
@@ -155,6 +155,12 @@ export const api = {
       }),
     }),
 
+  cancelRun: (sessionId: string) =>
+    request<{ cancelled: boolean; reason?: string }>(
+      `/sessions/${sessionId}/cancel`,
+      { method: "POST" }
+    ),
+
   // Context
   getContext: (sessionId: string) =>
     request<ContextUsage>(`/sessions/${sessionId}/context`),
@@ -164,10 +170,17 @@ export const api = {
       method: "POST",
     }),
 
-  countTokens: (sessionId: string, content: string) =>
+  countTokens: (
+    sessionId: string,
+    content: string,
+    attachedDocumentIds: string[] = []
+  ) =>
     request<TokenCount>(`/sessions/${sessionId}/count_tokens`, {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        attached_document_ids: attachedDocumentIds,
+      }),
     }),
 
   // Artifacts

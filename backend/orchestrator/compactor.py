@@ -35,7 +35,13 @@ Format as a numbered list of events. Be concise but complete — nothing importa
 
 
 def _count_tokens_approx(messages: list[dict]) -> int:
-    """Very rough token count: ~4 chars per token."""
+    """Very rough token count: ~4 chars per token.
+
+    The block loop must NOT gate on `isinstance(block, dict)` — when the
+    Lead loop appends `response.content`, the blocks are SDK objects (e.g.
+    BetaContentBlock), not dicts. Gating on dict skipped them entirely and
+    caused the compaction trigger to fire late on tool-heavy turns.
+    """
     total = 0
     for m in messages:
         content = m.get("content", "")
@@ -43,8 +49,7 @@ def _count_tokens_approx(messages: list[dict]) -> int:
             total += len(content) // 4
         elif isinstance(content, list):
             for block in content:
-                if isinstance(block, dict):
-                    total += len(str(block)) // 4
+                total += len(str(block)) // 4
     return total
 
 
@@ -73,8 +78,13 @@ async def maybe_compact(
     to_compact = messages[:-keep_tail]
     tail = messages[-keep_tail:]
 
+    # Truncate non-string content (tool results, SDK block lists) at 4K chars
+    # rather than 500. The smaller cap was dropping the bulk of subagent
+    # findings and chunk content from the summary, causing the Lead to
+    # re-fetch material it had already gathered.
+    _BLOCK_CAP = 4000
     history_text = "\n\n".join(
-        f"[{m['role'].upper()}]: {m['content'] if isinstance(m['content'], str) else str(m['content'])[:500]}"
+        f"[{m['role'].upper()}]: {m['content'] if isinstance(m['content'], str) else str(m['content'])[:_BLOCK_CAP]}"
         for m in to_compact
     )
 

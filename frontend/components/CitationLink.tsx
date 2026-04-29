@@ -17,6 +17,16 @@ type ChunkMeta = {
 const _cache = new Map<string, ChunkMeta>();
 const _inFlight = new Map<string, Promise<ChunkMeta>>();
 
+/**
+ * Drop all cached chunk metadata. Call this after deleting a document so
+ * citations referencing the now-removed document re-fetch (and surface as
+ * "not found") instead of showing the stale filename label.
+ */
+export function clearCitationCache(): void {
+  _cache.clear();
+  _inFlight.clear();
+}
+
 async function fetchMeta(id: string): Promise<ChunkMeta> {
   if (_cache.has(id)) return _cache.get(id) ?? null;
   const existing = _inFlight.get(id);

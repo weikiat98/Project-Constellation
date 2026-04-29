@@ -254,11 +254,18 @@ async def handle_tool(
         }
 
     if tool_name == "write_artifact":
+        # Coerce unknown / unsupported mime types to text/plain so the
+        # frontend artifact preview never falls back to wrong rendering.
+        # The tool schema declares an enum but the SDK doesn't enforce it
+        # before the call reaches the handler.
+        _ALLOWED_MIMES = {"text/plain", "text/markdown", "text/html", "text/csv"}
+        raw_mime = tool_input.get("mime_type", "text/plain")
+        mime_type = raw_mime if raw_mime in _ALLOWED_MIMES else "text/plain"
         aid = await create_artifact(
             session_id=session_id,
             name=tool_input["name"],
             content=tool_input["content"],
-            mime_type=tool_input.get("mime_type", "text/plain"),
+            mime_type=mime_type,
             citations=tool_input.get("citations"),
         )
         return {"artifact_id": aid, "name": tool_input["name"]}

@@ -34,8 +34,9 @@ class SessionEventBus:
         self,
         session_id: Optional[str] = None,
         run_index: Optional[int] = None,
+        maxsize: int = 1000,
     ) -> None:
-        self._queue: asyncio.Queue = asyncio.Queue()
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._closed = False
         self._session_id = session_id
         self._run_index = run_index
@@ -134,7 +135,7 @@ class EventBusRegistry:
 
     def get_or_create(self, session_id: str) -> SessionEventBus:
         bus = self._buses.get(session_id)
-        if bus is None:
+        if bus is None or bus.closed:
             bus = SessionEventBus()
             self._buses[session_id] = bus
         return bus

@@ -77,8 +77,10 @@ app.add_middleware(
 
 _doc_store = DocumentStore()
 
-# Track per-session token usage (rough estimate from lead runs)
-_session_tokens: dict[str, int] = {}
+# Per-session cancellation events. The Lead loop checks the event each
+# iteration and exits early if it's set. The /cancel endpoint sets the event;
+# the run task clears it on completion.
+_cancel_events: dict[str, asyncio.Event] = {}
 
 
 # ─── Sessions ────────────────────────────────────────────────────────────────
@@ -163,12 +165,28 @@ async def upload_document(session_id: str, file: UploadFile = File(...)):
     finally:
         os.unlink(tmp_path)
 
-    # Run extractors in background
-    from backend.store.sessions import get_chunks_for_document
+    # Run extractors in background. Wrap each task so an exception doesn't
+    # vanish into a "Task exception was never retrieved" warning, and verify
+    # the document still exists at run time so a delete-during-extraction
+    # doesn't insert orphan rows referencing a removed FK parent.
+    from backend.store.sessions import get_chunks_for_document, document_exists
 
     chunks = await get_chunks_for_document(result["document_id"])
-    asyncio.create_task(extract_definitions(result["document_id"], chunks))
-    asyncio.create_task(extract_cross_refs(result["document_id"], chunks))
+    document_id = result["document_id"]
+
+    async def _safe_extract(extractor, name: str):
+        try:
+            if not await document_exists(document_id):
+                return  # document was deleted before extraction ran
+            await extractor(document_id, chunks)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "extractor %s failed for document %s: %s", name, document_id, exc
+            )
+
+    asyncio.create_task(_safe_extract(extract_definitions, "definitions"))
+    asyncio.create_task(_safe_extract(extract_cross_refs, "cross_refs"))
 
     return DocumentOut(
         id=result["document_id"],
@@ -247,19 +265,37 @@ async def submit_message(session_id: str, body: MessageCreate):
     # comes back from another session) knows to re-attach the SSE stream.
     await update_session(session_id, last_run_state="running")
 
+    # Fresh cancel event for this run. Replaces any prior event so a stale
+    # set() from a previous run can't immediately abort the new one.
+    cancel_event = asyncio.Event()
+    _cancel_events[session_id] = cancel_event
+
     # Kick off agent run as a background task
     async def _run():
         final_state = "completed"
         try:
-            await run_lead(session_id, body.content, bus, body.audience)
+            await run_lead(
+                session_id,
+                body.content,
+                bus,
+                body.audience,
+                cancel_event,
+                body.attached_document_ids or None,
+            )
+            if cancel_event.is_set():
+                final_state = "cancelled"
         except Exception as exc:
             final_state = "error"
             bus.publish("error", message=str(exc))
         finally:
             bus.close()
             event_registry.close(session_id)
+            # Drop the cancel event so a later cancel can't accidentally
+            # affect a future run.
+            _cancel_events.pop(session_id, None)
             # Best-effort: record terminal state so re-mounted sessions see
-            # `idle/completed/error` instead of getting stuck in `running`.
+            # `idle/completed/error/cancelled` instead of getting stuck in
+            # `running`.
             try:
                 await update_session(session_id, last_run_state=final_state)
             except Exception:
@@ -268,6 +304,21 @@ async def submit_message(session_id: str, body: MessageCreate):
     asyncio.create_task(_run())
 
     return MessageOut(**user_msg)
+
+
+@app.post("/api/sessions/{session_id}/cancel", status_code=200)
+async def cancel_run(session_id: str):
+    """Signal the in-flight Lead run to stop at its next iteration.
+
+    The Lead loop checks the cancel event each iteration and emits a final
+    message + run_complete before returning, so the SSE consumer terminates
+    cleanly. Idempotent — calling on an idle session is a no-op.
+    """
+    event = _cancel_events.get(session_id)
+    if event is None:
+        return {"cancelled": False, "reason": "no run in flight"}
+    event.set()
+    return {"cancelled": True}
 
 
 # ─── Agent trace history ─────────────────────────────────────────────────────
@@ -288,6 +339,23 @@ async def stream_events(session_id: str):
     session = await get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
+
+    # If no run is in flight, return a one-shot stream that closes immediately.
+    # Without this, opening /stream against an idle session would block forever
+    # on an empty queue — the consumer awaits an event that will never arrive,
+    # holding the SSE connection open until the browser/server timeout fires.
+    if session.get("last_run_state") != "running":
+        async def _empty_stream():
+            yield 'data: {"type": "run_complete", "final": ""}\n\n'
+
+        return StreamingResponse(
+            _empty_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     bus = event_registry.get_or_create(session_id)
 
@@ -333,7 +401,12 @@ async def count_tokens(session_id: str, body: TokenCountRequest):
         raise HTTPException(404, "Session not found")
 
     # Build the doc index the Lead injects at the start of every run.
+    # Filter to attached_document_ids when provided so the estimate matches
+    # what `run_lead` actually sends to the model — see C3 in BUG_REPORT.md.
     docs = await get_documents(session_id)
+    if body.attached_document_ids:
+        attached_set = set(body.attached_document_ids)
+        docs = [d for d in docs if d["id"] in attached_set]
     doc_context_parts: list[str] = []
     for doc in docs:
         chunks = await get_chunks_for_document(doc["id"])
@@ -351,17 +424,22 @@ async def count_tokens(session_id: str, body: TokenCountRequest):
         "\n\n".join(doc_context_parts) if doc_context_parts else "No documents uploaded yet."
     )
 
-    # Rebuild the message array: existing history + a synthetic new user turn
-    # with the Lead's doc-index wrapper. We count with and without the draft
-    # content to give the UI a prompt-only split.
+    # Rebuild the message array: existing history + a synthetic new user turn.
+    # Mirror run_lead exactly: only add the doc-index wrapper when documents
+    # are present, otherwise pass the prompt verbatim. This keeps the
+    # estimate aligned with the actual API call.
     history = await get_messages(session_id)
     base_messages = [
         {"role": m["role"], "content": m["content"]} for m in history
     ]
 
-    wrapped_template = "## Document Index\n{ctx}\n\n## User Question\n{q}"
-    base_wrapped = wrapped_template.format(ctx=doc_context, q="")
-    full_wrapped = wrapped_template.format(ctx=doc_context, q=body.content)
+    if doc_context_parts:
+        wrapped_template = "## Document Index\n{ctx}\n\n## User Question\n{q}"
+        base_wrapped = wrapped_template.format(ctx=doc_context, q="")
+        full_wrapped = wrapped_template.format(ctx=doc_context, q=body.content)
+    else:
+        base_wrapped = ""
+        full_wrapped = body.content
 
     system_prompt_placeholder = (
         "You are the Lead Orchestrator of Constellation, a multi-agent document "
@@ -401,14 +479,29 @@ async def count_tokens(session_id: str, body: TokenCountRequest):
 
 @app.post("/api/sessions/{session_id}/compact", status_code=200)
 async def manual_compact(session_id: str):
-    """Manually trigger Lead-context compaction (for testing/advanced use)."""
+    """Manually trigger Lead-context compaction (test/preview only).
+
+    NOTE: This endpoint runs the compactor against the current persisted
+    history but **does not persist the compacted result**. The next real
+    run still loads full history via `get_messages` and re-compacts on its
+    own threshold. The endpoint exists to let the UI surface a
+    `compaction_done` event and confirm the compactor pipeline is healthy
+    — it is not a way to durably shrink a session's context.
+    """
     bus = event_registry.get_or_create(session_id)
     messages = await get_messages(session_id)
     history = [{"role": m["role"], "content": m["content"]} for m in messages]
     from backend.orchestrator.compactor import maybe_compact
 
     _, compacted = await maybe_compact(history, bus)
-    return {"compacted": compacted}
+    return {
+        "compacted": compacted,
+        "persisted": False,
+        "note": (
+            "Compaction was run but not saved. Real runs trigger their own "
+            "compaction automatically when context exceeds 85% of the window."
+        ),
+    }
 
 
 # ─── Artifacts ───────────────────────────────────────────────────────────────

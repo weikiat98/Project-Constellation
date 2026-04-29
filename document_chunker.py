@@ -21,26 +21,39 @@ class DocumentChunker:
     def chunk_by_pages(self, content: str, pages_per_chunk: int = 10) -> List[Dict[str, any]]:
         """
         Split document by page markers
-        
+
         Args:
             content: Document content with page markers (e.g., "--- Page 1 ---")
             pages_per_chunk: Number of pages per chunk
-            
+
         Returns:
             List of chunks with metadata
         """
-        # Look for page markers
+        # Look for page markers. With a capturing group, re.split places the
+        # captured page number at odd indices: [pre, num, body, num, body, ...].
         page_pattern = r'-{3,}\s*Page\s+(\d+)\s*-{3,}'
         pages = re.split(page_pattern, content)
-        
+
         chunks = []
         current_chunk = ""
-        current_pages = []
-        page_num = 1
-        
-        for i in range(0, len(pages), 2):
-            page_content = pages[i] if i < len(pages) else ""
-            
+        current_pages: List[int] = []
+        # First element of the split is anything before the first page marker;
+        # iterate as (page_num_str, page_body) tuples after that so each chunk
+        # is labelled with the actual page number from the marker.
+        leading = pages[0] if pages else ""
+        if leading.strip():
+            current_chunk = leading
+            current_pages = [1]
+
+        i = 1
+        while i + 1 < len(pages):
+            try:
+                page_num = int(pages[i])
+            except (TypeError, ValueError):
+                page_num = current_pages[-1] + 1 if current_pages else 1
+            page_content = pages[i + 1]
+            i += 2
+
             if len(current_chunk) + len(page_content) > self.max_chunk_size or \
                len(current_pages) >= pages_per_chunk:
                 if current_chunk:
@@ -55,9 +68,7 @@ class DocumentChunker:
             else:
                 current_chunk += page_content
                 current_pages.append(page_num)
-            
-            page_num += 1
-        
+
         # Add remaining content
         if current_chunk:
             chunks.append({
@@ -66,7 +77,7 @@ class DocumentChunker:
                 "start_page": current_pages[0] if current_pages else 1,
                 "end_page": current_pages[-1] if current_pages else 1
             })
-        
+
         return chunks
     
     def chunk_by_chapters(self, content: str) -> List[Dict[str, any]]:

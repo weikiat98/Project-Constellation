@@ -43,7 +43,7 @@ export default function HomePage() {
     const handle = window.setTimeout(() => {
       if (draftId) {
         setCountingTokens(true);
-        api.countTokens(draftId, input)
+        api.countTokens(draftId, input, pendingDocs.map((d) => d.id))
           .then((tc) => setTokenCount(tc))
           .catch(() => {})
           .finally(() => setCountingTokens(false));

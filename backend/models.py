@@ -145,6 +145,9 @@ class ContextUsageOut(BaseModel):
 
 class TokenCountRequest(BaseModel):
     content: str = ""  # draft prompt text; empty counts just the base payload
+    # When provided, restrict the doc index to this subset so the token
+    # estimate matches what `run_lead` will actually send.
+    attached_document_ids: list[str] = Field(default_factory=list)
 
 
 class TokenCountOut(BaseModel):

@@ -39,11 +39,11 @@ class DocumentLoader:
             Dictionary with content, page_count, and metadata
         """
         try:
-            import PyPDF2 # you need to install PyPDF2 if not already installed
+            import PyPDF2  # listed in repo requirements.txt
         except ImportError:
             raise ImportError(
                 "PyPDF2 is required for PDF processing. "
-                "Install it with: pip install PyPDF2 --break-system-packages"
+                "Install missing dependencies with: pip install -r requirements.txt"
             )
         
         with open(file_path, 'rb') as f:
@@ -82,11 +82,11 @@ class DocumentLoader:
             Dictionary with content, paragraph_count, and metadata
         """
         try:
-            from docx import Document # you need to install python-docx if not already installed
+            from docx import Document  # listed in repo requirements.txt
         except ImportError:
             raise ImportError(
                 "python-docx is required for DOCX processing. "
-                "Install it with: pip install python-docx --break-system-packages"
+                "Install missing dependencies with: pip install -r requirements.txt"
             )
         
         doc = Document(file_path)
@@ -296,7 +296,7 @@ class DocumentSaver:
         except ImportError:
             raise ImportError(
                 "python-docx is required for DOCX creation. "
-                "Install it with: pip install python-docx --break-system-packages"
+                "Install missing dependencies with: pip install -r requirements.txt"
             )
         
         doc = Document()
@@ -355,5 +355,5 @@ if __name__ == "__main__":
     saver.save_html(sample_text, '/tmp/output.html', title="Sample Document")
     print("Saved as HTML: /tmp/output.html")
     
-    print("\nNote: For PDF and DOCX support, install additional packages:")
-    print("  pip install PyPDF2 python-docx --break-system-packages")
+    print("\nNote: For PDF and DOCX support, install repo dependencies:")
+    print("  pip install -r requirements.txt")

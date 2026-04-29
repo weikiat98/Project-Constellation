@@ -19,19 +19,25 @@ from typing import Optional
 
 from backend.store.sessions import insert_definition
 
-# Regex: captures a quoted term and its definition clause
+# Regex: captures a quoted term and its definition clause.
+#
+# The definition body is non-greedy and capped by length, with a terminator
+# of `;` or end-of-paragraph (double newline) — but NOT the first period.
+# Legal definitions routinely span multiple sentences ("X means …. This
+# includes …."); the original `[^;\.]` cut off everything after the first
+# period, so most multi-sentence definitions were truncated.
 _DEF_PATTERNS = [
     # "term" means <definition>
     re.compile(
         r'"(?P<term>[^"]{1,80})"\s+(?:means?|refers?\s+to|is\s+defined\s+as|has\s+the\s+meaning)\s+'
-        r'(?P<definition>[^;\.]{10,300})',
-        re.IGNORECASE,
+        r'(?P<definition>(?:(?!\n\s*\n)[^;]){10,500}?)(?=\s*(?:;|\n\s*\n|$))',
+        re.IGNORECASE | re.DOTALL,
     ),
     # "term" shall mean <definition>
     re.compile(
         r'"(?P<term>[^"]{1,80})"\s+shall\s+(?:mean|refer\s+to)\s+'
-        r'(?P<definition>[^;\.]{10,300})',
-        re.IGNORECASE,
+        r'(?P<definition>(?:(?!\n\s*\n)[^;]){10,500}?)(?=\s*(?:;|\n\s*\n|$))',
+        re.IGNORECASE | re.DOTALL,
     ),
 ]
 

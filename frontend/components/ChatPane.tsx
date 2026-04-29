@@ -23,6 +23,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { api, type Artifact, type Document, type TokenCount } from "@/lib/api";
+import { CITATION_RE, UUID_RE } from "@/lib/citations";
 import CitationLink from "./CitationLink";
 import ArtifactCard from "./ArtifactCard";
 import ContextMeter from "./ContextMeter";
@@ -30,11 +31,9 @@ import TokenCounter from "./TokenCounter";
 import AgentTracePanel from "./AgentTracePanel";
 import type { TraceEntry } from "./AgentTrace";
 
-// Match a citation block: one or more UUIDs separated by `,` `;` or whitespace
-// inside square brackets. e.g. [uuid], [uuid, uuid], [uuid; uuid].
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const CITATION_RE = new RegExp(`\\[(${UUID}(?:\\s*[,;]\\s*${UUID})*)\\]`, "g");
-const UUID_RE = new RegExp(UUID, "g");
+// Citation regex is centralised in `@/lib/citations` and reused here. The /g
+// flag on a shared module-level RegExp means callers MUST reset `lastIndex = 0`
+// before each scan (which decorateText below does explicitly).
 
 // No client-side typewriter needed: the backend now streams `text_delta`
 // events incrementally, so `streamingText` grows in real time as chunks arrive.
@@ -294,13 +293,13 @@ export default function ChatPane({
     if (isStreaming) return;
     const handle = window.setTimeout(() => {
       setCountingTokens(true);
-      api.countTokens(sessionId, input)
+      api.countTokens(sessionId, input, documents.map((d) => d.id))
         .then((tc) => setTokenCount(tc))
         .catch(() => {})
         .finally(() => setCountingTokens(false));
     }, 400);
     return () => window.clearTimeout(handle);
-  }, [input, sessionId, documents.length, isStreaming]);
+  }, [input, sessionId, documents, isStreaming]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

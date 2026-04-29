@@ -21,16 +21,18 @@ export default function SourceDrawer({ chunkId, onClose }: Props) {
 
   useEffect(() => {
     if (!chunkId) { setChunk(null); return; }
+    // AbortController prevents a stale in-flight response from overwriting
+    // the displayed chunk when the user clicks A then quickly clicks B.
+    const ctrl = new AbortController();
     setLoading(true);
-    // Fetch the chunk directly — we can route through the existing artifacts endpoint
-    // or add a /api/chunks/{id} endpoint. For now we fetch from sessions context.
-    // Quick workaround: parse from existing session detail via parent page state.
-    // In production you'd add GET /api/chunks/{id}.
-    fetch(`/api/chunks/${chunkId}`)
+    fetch(`/api/chunks/${chunkId}`, { signal: ctrl.signal })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => setChunk(data))
-      .catch(() => setChunk(null))
+      .catch((err) => {
+        if (err?.name !== "AbortError") setChunk(null);
+      })
       .finally(() => setLoading(false));
+    return () => ctrl.abort();
   }, [chunkId]);
 
   if (!chunkId) return null;

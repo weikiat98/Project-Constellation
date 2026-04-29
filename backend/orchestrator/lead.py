@@ -201,13 +201,25 @@ _AUDIENCE_INSTRUCTIONS = {
 }
 
 
-_AUDIENCE_FINALIZE_CHECK = (
-    "BEFORE calling `finalize`, re-read your `result` against the AUDIENCE brief "
-    "above. If audience=layperson and you used a section number, Latin term, or "
-    "unexpanded acronym, REWRITE that sentence in plain English. If audience=expert "
-    "and you wrote a generic word like 'rule' or 'clause' instead of the precise "
-    "statutory reference, REWRITE it. Audience compliance is non-negotiable."
-)
+_AUDIENCE_FINALIZE_CHECKS = {
+    "layperson": (
+        "BEFORE calling `finalize`, re-read your `result`. If you used any "
+        "section number, Latin term, or unexpanded acronym, REWRITE that "
+        "sentence in plain English. Layperson compliance is non-negotiable."
+    ),
+    "professional": (
+        "BEFORE calling `finalize`, re-read your `result`. Domain terms should "
+        "appear with brief context on first use; section numbers should aid "
+        "navigation, not replace explanation. Avoid both chatty oversimplification "
+        "and dense expert-only Latin."
+    ),
+    "expert": (
+        "BEFORE calling `finalize`, re-read your `result`. If you used a generic "
+        "word like 'rule' or 'clause' instead of the precise statutory reference, "
+        "REWRITE it. Use the document's defined terms verbatim. Expert compliance "
+        "is non-negotiable."
+    ),
+}
 
 
 def _build_tools(use_advisor: bool) -> tuple[list[dict], list[str]]:
@@ -230,11 +242,16 @@ async def run_lead(
     user_message: str,
     bus: SessionEventBus,
     audience: str = "professional",
+    cancel_event: Optional[asyncio.Event] = None,
+    attached_document_ids: Optional[list[str]] = None,
 ) -> str:
     """
     Entry point: run the full Lead agentic loop for one user turn.
 
-    Returns the final answer string.
+    Returns the final answer string. If `cancel_event` is set during the
+    run, the loop exits early at its next iteration boundary and a partial
+    answer (or a cancellation notice) is persisted so the chat doesn't
+    end with a silent empty bubble.
     """
     lead_run_id = await create_agent_run(session_id, "lead_orchestrator")
     bus.publish("agent_spawned", agent_id=lead_run_id, role="lead_orchestrator", parent=None)
@@ -243,8 +260,14 @@ async def run_lead(
     use_advisor = bool(ADVISOR_MODEL)
     tools, betas = _build_tools(use_advisor)
 
-    # Load document context
+    # Load document context. When the user attached a specific subset for
+    # this turn, scope the doc index to those docs so we don't pad the prompt
+    # with unrelated material — and so the live count_tokens estimate matches
+    # what the model actually sees.
     docs = await get_documents(session_id)
+    if attached_document_ids:
+        attached_set = set(attached_document_ids)
+        docs = [d for d in docs if d["id"] in attached_set]
     doc_ids = [d["id"] for d in docs]
 
     doc_context_parts = []
@@ -264,10 +287,13 @@ async def run_lead(
     doc_context = "\n\n".join(doc_context_parts) if doc_context_parts else "No documents uploaded yet."
 
     audience_instruction = _AUDIENCE_INSTRUCTIONS.get(audience, _AUDIENCE_INSTRUCTIONS["professional"])
+    audience_finalize_check = _AUDIENCE_FINALIZE_CHECKS.get(
+        audience, _AUDIENCE_FINALIZE_CHECKS["professional"]
+    )
     system_prompt = _LEAD_SYSTEM.format(
         audience=audience,
         audience_instruction=audience_instruction,
-        audience_finalize_check=_AUDIENCE_FINALIZE_CHECK,
+        audience_finalize_check=audience_finalize_check,
     )
 
     if doc_context_parts:
@@ -282,6 +308,10 @@ async def run_lead(
 
     tokens_in = tokens_out = 0
     final_answer = ""
+    # Initialised to None so the post-loop recovery block can safely reference
+    # it even when the loop breaks before the first API call (e.g. immediate
+    # cancellation).
+    response: Any = None
     # Track artifacts created this turn so we can backfill a recap if the model
     # calls `finalize` with an empty `result` (safety net only — the system
     # prompt requires a real recap).
@@ -308,6 +338,10 @@ async def run_lead(
 
     # Agentic loop
     for _ in range(40):  # safety limit
+        # User-initiated cancellation: break before spending another model call.
+        if cancel_event is not None and cancel_event.is_set():
+            break
+
         # Check for compaction
         messages, compacted = await maybe_compact(messages, bus)
         if compacted:
@@ -362,16 +396,29 @@ async def run_lead(
                     tokens_out += getattr(iteration, "output_tokens", 0)
 
         if response.stop_reason == "end_turn":
-            # The model ended the turn with plain text instead of calling
-            # `finalize` (e.g. a refusal or chat-style response). That same
-            # text was already streamed as `thinking_delta` above, so clear
-            # the thinking panel before we re-emit the text as the real
-            # user-facing message — otherwise it appears in both places.
             for block in response.content:
                 if block.type == "text":
                     final_answer += block.text
             if final_answer:
                 bus.publish("thinking_clear", agent_id=lead_run_id)
+                _CHUNK = 20
+                for i in range(0, len(final_answer), _CHUNK):
+                    bus.publish("text_delta", agent_id=lead_run_id, delta=final_answer[i:i + _CHUNK])
+                    await asyncio.sleep(0)
+                bus.publish("final_message", content=final_answer)
+                bus.publish("run_complete", final=final_answer[:300])
+                await finish_agent_run(lead_run_id, tokens_in, tokens_out)
+                await add_message(
+                    session_id,
+                    "assistant",
+                    final_answer,
+                    tokens_in + tokens_out,
+                    artifact_ids=[
+                        a["artifact_id"] for a in artifacts_this_turn if a.get("artifact_id")
+                    ],
+                    thinking=bus.drain_thinking() or None,
+                )
+                return final_answer
             break
 
         if response.stop_reason != "tool_use":
@@ -432,10 +479,10 @@ async def run_lead(
                 # real text_delta chunks so the frontend renders incrementally
                 # without needing a fake client-side typewriter.
                 bus.publish("thinking_clear", agent_id=lead_run_id)
-                _CHUNK = 20  # characters per delta event
+                _CHUNK = 20
                 for i in range(0, len(final_answer), _CHUNK):
                     bus.publish("text_delta", agent_id=lead_run_id, delta=final_answer[i:i + _CHUNK])
-                    await asyncio.sleep(0.015)  # ~15ms between chunks so SSE consumer can flush each delta
+                    await asyncio.sleep(0)
                 bus.publish("final_message", content=final_answer)
                 bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)
@@ -539,6 +586,16 @@ async def run_lead(
             f"Open {'them' if plural else 'it'} above to see the full breakdown. "
             f"Ask a follow-up question if you'd like me to expand on any section "
             f"or walk through specific findings in more detail."
+        )
+
+    cancelled = cancel_event is not None and cancel_event.is_set()
+
+    if not final_answer and cancelled:
+        # User clicked Stop. Persist a clear, non-error message so the chat
+        # bubble is meaningful and the run state ends cleanly.
+        final_answer = (
+            "Run stopped before a final answer was produced. "
+            "Click Retry on the previous message to run it again."
         )
 
     if not final_answer:

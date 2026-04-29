@@ -22,8 +22,17 @@ def _fts5_safe(query: str) -> str:
     """Quote each token as an FTS5 phrase so operators (`:`, `-`, `NEAR`, column
     filters) in LLM-generated queries can't reach the parser. Returns a query
     that matches rows containing all tokens, or an empty phrase if nothing
-    tokenisable remains."""
-    tokens = re.findall(r"\w+", query or "")
+    tokenisable remains.
+
+    Token regex preserves dots, hyphens, slashes, and the section sign so
+    legal/regulatory queries like "U.S.C. § 12" or "Section 12(3)(a)" survive
+    tokenisation as meaningful phrases instead of degrading to single letters.
+    Each token is wrapped in double quotes — FTS5 treats the contents of a
+    quoted phrase as literal text, so embedded operators are inert.
+    """
+    tokens = re.findall(r"[\w.\-/§()]+", query or "")
+    # Strip purely-punctuation tokens (e.g. a stray "()") that would match nothing.
+    tokens = [t for t in tokens if re.search(r"\w", t)]
     return " ".join(f'"{t}"' for t in tokens) if tokens else '""'
 
 DB_PATH = "deep_reading.db"
@@ -35,7 +44,6 @@ _db_initialised = False
 
 _DDL_STATEMENTS = [
     "PRAGMA journal_mode=WAL",
-    "PRAGMA foreign_keys=ON",
     """CREATE TABLE IF NOT EXISTS sessions (
         id              TEXT PRIMARY KEY,
         title           TEXT,
@@ -132,6 +140,13 @@ _DDL_STATEMENTS = [
 
 
 async def _init_db(db: aiosqlite.Connection) -> None:
+    # `foreign_keys` is per-connection in SQLite, so it MUST be re-applied on
+    # every connection — not gated by `_db_initialised` (which short-circuits
+    # after the first connection runs the DDL block). Without this, every
+    # connection after the first runs with FK enforcement off, silently
+    # breaking ON DELETE CASCADE on every table.
+    await db.execute("PRAGMA foreign_keys=ON")
+
     global _db_initialised
     if _db_initialised:
         return
@@ -285,6 +300,15 @@ async def delete_session(session_id: str) -> bool:
     return deleted
 
 
+async def document_exists(document_id: str) -> bool:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM documents WHERE id = ? LIMIT 1", (document_id,)
+        )
+        row = await cursor.fetchone()
+    return row is not None
+
+
 async def delete_document(session_id: str, document_id: str) -> bool:
     """Delete a document and its chunks (cascade). Scoped to a session so
     cross-session deletes can't slip through. Returns False if not found."""
@@ -320,23 +344,28 @@ async def document_referenced_by_message(session_id: str, document_id: str) -> b
 
 
 async def delete_messages_after(session_id: str, message_id: str) -> int:
-    """Delete the given message and every message after it (by created_at).
+    """Delete the given message and every message after it (by insertion order).
 
     Used for edit/retry flows: truncating history so the agent re-runs from
     the edited or retried prompt. Returns the number of rows deleted.
+
+    Uses SQLite's rowid (insertion-order monotonic) rather than `created_at`
+    so messages that share a timestamp (rare under WAL concurrency, but
+    possible) cannot be over-deleted. The pivot row's own rowid is included
+    via `>=`.
     """
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT created_at FROM messages WHERE id = ? AND session_id = ?",
+            "SELECT rowid FROM messages WHERE id = ? AND session_id = ?",
             (message_id, session_id),
         )
         row = await cursor.fetchone()
         if not row:
             return 0
-        pivot = row["created_at"]
+        pivot_rowid = row["rowid"]
         cursor = await db.execute(
-            "DELETE FROM messages WHERE session_id = ? AND created_at >= ?",
-            (session_id, pivot),
+            "DELETE FROM messages WHERE session_id = ? AND rowid >= ?",
+            (session_id, pivot_rowid),
         )
         deleted = cursor.rowcount or 0
         await db.commit()

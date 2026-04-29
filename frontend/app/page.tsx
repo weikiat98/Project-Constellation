@@ -20,7 +20,9 @@ export default function SplashPage() {
 
   useEffect(() => {
     SLIDES.forEach((src) => {
-      const img = new Image();
+      // Use window.Image so this stays a DOM HTMLImageElement even if a
+      // future edit adds `import Image from "next/image"` to this file.
+      const img = new window.Image();
       img.src = src;
     });
   }, []);

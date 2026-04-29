@@ -5,6 +5,8 @@ import { X, Download, Copy, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Artifact } from "@/lib/api";
+// Citation regex centralised in lib/citations — both ChatPane and this
+// component import it from there so the literal isn't duplicated.
 import { CITATION_RE, UUID_RE, downloadArtifact } from "@/lib/citations";
 import CitationLink from "./CitationLink";
 
@@ -83,7 +85,8 @@ export default function ArtifactPreview({ artifact, onClose, onCitationClick }: 
     }
   }, [artifact]);
 
-  // Load persisted width once on mount.
+  // Load persisted width once on mount, then re-clamp on window resize so
+  // the panel never exceeds the (now-narrower) viewport.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const saved = window.localStorage.getItem(WIDTH_STORAGE_KEY);
@@ -94,6 +97,9 @@ export default function ArtifactPreview({ artifact, onClose, onCitationClick }: 
       // Default to ~40vw, clamped into range.
       setWidth(clampWidth(Math.round(window.innerWidth * 0.4)));
     }
+    const onResize = () => setWidth((w) => clampWidth(w));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   function clampWidth(px: number): number {

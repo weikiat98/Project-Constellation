@@ -6,6 +6,7 @@ import { X, Upload as UploadIcon, Pencil, Check } from "lucide-react";
 import { api, type Artifact, type Document, type Session, type Audience } from "@/lib/api";
 import { subscribeToStream, type SSEEvent } from "@/lib/sse";
 import ChatPane, { type ChatMessage } from "@/components/ChatPane";
+import { clearCitationCache } from "@/components/CitationLink";
 import type { TraceEntry } from "@/components/AgentTrace";
 import UploadZone from "@/components/UploadZone";
 import AudienceToggle from "@/components/AudienceToggle";
@@ -37,34 +38,41 @@ function mapServerMessage(m: {
 }
 
 // Merge server messages with transient system banners from current local state.
-// Each system banner is re-inserted just before the same next persisted message
-// it preceded before the refresh, so audience-change labels stay in place.
+// Each banner is anchored to the count of non-system messages that preceded
+// it locally, so it survives both reloads and message-truncation operations
+// (retry/edit) — even when the next persisted message that originally followed
+// the banner has been deleted from the server. The original ID-based anchor
+// dropped any banner whose next-message ID was no longer in `serverMsgs`.
 function mergeWithBanners(prev: ChatMessage[], serverMsgs: ChatMessage[]): ChatMessage[] {
-  // Collect banners alongside the ID of the persisted message that followed each one.
-  const banners: Array<{ banner: ChatMessage; nextPersistedId: string | null }> = [];
-  for (let i = 0; i < prev.length; i++) {
-    if (prev[i].role === "system") {
-      // Find the first non-system message after this banner.
-      let nextId: string | null = null;
-      for (let j = i + 1; j < prev.length; j++) {
-        if (prev[j].role !== "system") { nextId = prev[j].id; break; }
-      }
-      banners.push({ banner: prev[i], nextPersistedId: nextId });
+  // Collect banners + the count of non-system messages preceding each one.
+  const banners: Array<{ banner: ChatMessage; precedingCount: number }> = [];
+  let count = 0;
+  for (const m of prev) {
+    if (m.role === "system") {
+      banners.push({ banner: m, precedingCount: count });
+    } else {
+      count += 1;
     }
   }
   if (banners.length === 0) return serverMsgs;
 
+  // Cap each anchor at the new server-message count so banners that pointed
+  // past the (now-truncated) tail collapse to the end instead of disappearing.
   const result: ChatMessage[] = [];
-  for (const msg of serverMsgs) {
-    // Insert any banners that should appear just before this message.
-    for (const { banner, nextPersistedId } of banners) {
-      if (nextPersistedId === msg.id) result.push(banner);
+  let inserted = 0;
+  for (let i = 0; i < serverMsgs.length; i++) {
+    while (
+      inserted < banners.length &&
+      Math.min(banners[inserted].precedingCount, serverMsgs.length) === i
+    ) {
+      result.push(banners[inserted].banner);
+      inserted += 1;
     }
-    result.push(msg);
+    result.push(serverMsgs[i]);
   }
-  // Banners with no following persisted message (appended at the end) go last.
-  for (const { banner, nextPersistedId } of banners) {
-    if (nextPersistedId === null) result.push(banner);
+  while (inserted < banners.length) {
+    result.push(banners[inserted].banner);
+    inserted += 1;
   }
   return result;
 }
@@ -168,17 +176,31 @@ export default function SessionPage() {
   const uploadCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didAttachInitial = useRef(false);
   const pendingCommitRef = useRef<(() => void) | null>(null);
+  // Audience ref keeps the mount effect's closure free of `audience` as a
+  // dependency, so manual toggles don't re-fire the effect (and trigger
+  // extra getSession round-trips). The mount handoff reads the latest
+  // audience from this ref instead of the captured prop.
+  const audienceRef = useRef<Audience>(audience);
+  useEffect(() => {
+    audienceRef.current = audience;
+  }, [audience]);
 
   const attachStream = useCallback(() => {
+    // Close any prior EventSource before opening a new one. attachStream is
+    // called from mount, send, retry, edit, and the /home handoff — without
+    // this guard, rapid successive calls leak parallel SSE connections to
+    // the same session.
+    stopRef.current?.();
+    stopRef.current = null;
+
     setStreamingText("");
     setThinkingText("");
     setIsStreaming(true);
     let accumulatedThinking = "";
     let accumulatedText = "";
-    // Artifacts produced *during this run* — attached to the assistant
-    // message that the run commits, so the inline artifact row only shows
-    // the files generated for that specific user query (not every artifact
-    // in the session).
+    // Artifacts produced *during this run*. Tracked in a per-invocation
+    // local array; we always derive React state from this single source so
+    // there's no shared mutable state across overlapping attachStream calls.
     const runArtifactIds: string[] = [];
     setRunArtifactIds([]);
     // Defer the artifact preview auto-open until the recap has streamed
@@ -237,8 +259,9 @@ export default function SessionPage() {
             runArtifactIds.push(event.artifact_id);
             // Expose the in-flight artifact IDs to ChatPane so the "Generated
             // files" button can render inside the streaming bubble, not only
-            // after run_complete commits the assistant message.
-            setRunArtifactIds([...runArtifactIds]);
+            // after run_complete commits the assistant message. Use a fresh
+            // copy each time so React reliably re-renders.
+            setRunArtifactIds(runArtifactIds.slice());
             // Buffer the artifact ID — canvas preview is deferred until
             // final_message fires so the recap text appears first.
             pendingPreviewArtifactId = event.artifact_id;
@@ -337,10 +360,11 @@ export default function SessionPage() {
         didAttachInitial.current = true;
         // Explicit URL param takes priority; otherwise infer from the prompt
         // text; otherwise fall back to the session's persisted audience.
+        const currentAudience = audienceRef.current;
         const inferred = !audParam ? inferAudience(promptParam) : null;
-        const chosenAud = audParam || inferred || audience;
+        const chosenAud = audParam || inferred || currentAudience;
         if (audParam) setAudience(audParam);
-        else if (inferred && inferred !== audience) {
+        else if (inferred && inferred !== currentAudience) {
           setAudience(inferred);
           api.updateSession(sessionId, { audience: inferred }).catch(() => {});
         }
@@ -382,17 +406,23 @@ export default function SessionPage() {
       stopRef.current?.();
       stopRef.current = null;
     };
-  }, [sessionId, router, searchParams, attachStream, audience]);
+    // `audience` intentionally omitted — it's read via audienceRef so manual
+    // toggles don't trigger an extra getSession refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, router, searchParams, attachStream]);
 
   const handleSend = useCallback(async (text: string, attachedDocs: string[] = []) => {
     if (isStreaming) return;
 
     // Auto-adjust audience if the prompt explicitly requests a different level.
+    // The inferred audience is applied to *this turn only* — we no longer
+    // persist it to the session. Sticky persistence made transient phrasings
+    // (e.g. "assume I'm an engineer for this one question") flip the entire
+    // session's audience, requiring a manual toggle back.
     const inferred = inferAudience(text);
     const resolvedAudience = inferred ?? audience;
     if (inferred && inferred !== audience) {
       setAudience(inferred);
-      api.updateSession(sessionId, { audience: inferred }).catch(() => {});
     }
 
     setMessages((prev) => {
@@ -441,6 +471,10 @@ export default function SessionPage() {
   }, [sessionId, audience, isStreaming, attachStream, documents]);
 
   function handleStop() {
+    // Tell the backend to stop the agentic loop at its next iteration so
+    // we don't keep burning tokens after the user clicks Stop. The SSE
+    // close below is local-only — it does not interrupt the backend run.
+    api.cancelRun(sessionId).catch(() => {});
     stopRef.current?.();
     stopRef.current = null;
     setIsStreaming(false);
@@ -608,6 +642,11 @@ export default function SessionPage() {
                 try {
                   await api.deleteDocument(sessionId, d.id);
                   setDocuments((prev) => prev.filter((x) => x.id !== d.id));
+                  // Citation labels in older messages cache the deleted
+                  // document's filename — clear them so subsequent renders
+                  // re-fetch (and surface as "not found") instead of
+                  // showing a stale label.
+                  clearCitationCache();
                 } catch (err) {
                   // Surface the server's reason (most often: doc is referenced
                   // by a previous message) so the user knows why it failed.

@@ -24,7 +24,7 @@ function mapServerMessage(m: {
   role: string;
   content: string;
   artifact_ids?: string[];
-  thinking?: string;
+  thinking?: string | null;
   attached_documents?: string[];
 }): ChatMessage {
   return {
@@ -175,6 +175,10 @@ export default function SessionPage() {
   const stopRef = useRef<(() => void) | null>(null);
   const uploadCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didAttachInitial = useRef(false);
+  // Hydrate audience from the server once per session id. This prevents
+  // search-param-only rerenders (e.g. router.replace stripping ?prompt) from
+  // clobbering a freshly selected audience with stale persisted state.
+  const didHydrateAudienceForSession = useRef<string | null>(null);
   const pendingCommitRef = useRef<(() => void) | null>(null);
   // Audience ref keeps the mount effect's closure free of `audience` as a
   // dependency, so manual toggles don't re-fire the effect (and trigger
@@ -206,6 +210,106 @@ export default function SessionPage() {
     // Defer the artifact preview auto-open until the recap has streamed
     // so the user reads the chat reply before the canvas pops open.
     let pendingPreviewArtifactId: string | null = null;
+    // Paced streaming: SSE deltas can arrive in uneven bursts, which causes
+    // jumpy text if rendered immediately. We decouple network cadence from
+    // paint cadence by advancing visible text based on elapsed time, then
+    // apply a soft catch-up when the hidden buffer gets too far ahead.
+    const TEXT_CHARS_PER_SEC = 95;
+    const FINAL_TEXT_CHARS_PER_SEC = 110;
+    const THINKING_CHARS_PER_SEC = 90;
+    const TEXT_MAX_CHARS_PER_FRAME = 12;
+    const THINKING_MAX_CHARS_PER_FRAME = 16;
+    const SOFT_CATCHUP_THRESHOLD = 3000;
+    const SOFT_CATCHUP_MAX_STEP = 10;
+    let displayedText = "";
+    let displayedThinking = "";
+    let pacingRafId: number | null = null;
+    let lastPaceTs = 0;
+    let sawFinalMessage = false;
+
+    const advance = (
+      displayed: string,
+      target: string,
+      charsPerSecond: number,
+      dtMs: number,
+      maxCharsPerFrame: number,
+      allowSoftCatchup: boolean
+    ): string => {
+      if (displayed.length >= target.length) return displayed;
+      const remaining = target.length - displayed.length;
+      const baseStep = Math.max(1, Math.floor((charsPerSecond * dtMs) / 1000));
+      let step = Math.min(baseStep, maxCharsPerFrame);
+      if (allowSoftCatchup && remaining > SOFT_CATCHUP_THRESHOLD) {
+        step = Math.max(step, Math.min(SOFT_CATCHUP_MAX_STEP, Math.ceil(remaining / 900)));
+      }
+      step = Math.min(step, remaining);
+      return target.slice(0, displayed.length + step);
+    };
+
+    const tick = (ts: number) => {
+      pacingRafId = null;
+      if (!lastPaceTs) lastPaceTs = ts;
+      const dtMs = Math.min(64, Math.max(8, ts - lastPaceTs));
+      lastPaceTs = ts;
+      let needAnotherFrame = false;
+
+      // Text channel pacing.
+      if (displayedText.length < accumulatedText.length) {
+        displayedText = advance(
+          displayedText,
+          accumulatedText,
+          sawFinalMessage ? FINAL_TEXT_CHARS_PER_SEC : TEXT_CHARS_PER_SEC,
+          dtMs,
+          TEXT_MAX_CHARS_PER_FRAME,
+          !sawFinalMessage
+        );
+        setStreamingText(displayedText);
+        if (displayedText.length < accumulatedText.length) needAnotherFrame = true;
+      }
+
+      // Thinking channel pacing — same idea, separate budget.
+      if (displayedThinking.length < accumulatedThinking.length) {
+        displayedThinking = advance(
+          displayedThinking,
+          accumulatedThinking,
+          THINKING_CHARS_PER_SEC,
+          dtMs,
+          THINKING_MAX_CHARS_PER_FRAME,
+          true
+        );
+        setThinkingText(displayedThinking);
+        if (displayedThinking.length < accumulatedThinking.length) needAnotherFrame = true;
+      }
+
+      if (needAnotherFrame) {
+        pacingRafId = window.requestAnimationFrame(tick);
+      }
+    };
+    const schedulePacing = () => {
+      if (pacingRafId === null) {
+        pacingRafId = window.requestAnimationFrame(tick);
+      }
+    };
+    // Force-flush both channels to their full buffers — used when the server
+    // sends authoritative content (final_message) or terminates the stream.
+    const flushImmediate = () => {
+      if (pacingRafId !== null) {
+        window.cancelAnimationFrame(pacingRafId);
+        pacingRafId = null;
+      }
+      lastPaceTs = 0;
+      displayedText = accumulatedText;
+      displayedThinking = accumulatedThinking;
+      setStreamingText(displayedText);
+      setThinkingText(displayedThinking);
+    };
+    const cancelPendingFlushes = () => {
+      if (pacingRafId !== null) {
+        window.cancelAnimationFrame(pacingRafId);
+        pacingRafId = null;
+      }
+      lastPaceTs = 0;
+    };
 
     const unsubscribe = subscribeToStream(
       sessionId,
@@ -213,25 +317,43 @@ export default function SessionPage() {
         switch (event.type) {
           case "thinking_delta":
             accumulatedThinking += event.delta;
-            setThinkingText(accumulatedThinking);
+            schedulePacing();
             break;
           case "thinking_clear":
-            // Backend signals that what was streamed as thinking is actually
-            // the user-facing message (model ended turn without `finalize`).
-            // Drop the accumulated thinking so it isn't duplicated under the
-            // final chat bubble.
+            // Backend signals the thinking phase is over and the final answer
+            // is about to stream as text_delta chunks. Don't clear thinkingText
+            // yet — keep it visible in the panel until the first text_delta
+            // arrives so there's no blank-flash between "Thinking…" ending and
+            // the answer text starting.
             accumulatedThinking = "";
-            setThinkingText("");
+            displayedThinking = "";
+            // (setThinkingText deferred to first text_delta below)
             break;
           case "text_delta":
-            // Legacy path: if any agent still publishes plain text_delta,
-            // treat it as streaming content (kept for forward compatibility).
+            // Answer streaming in real time from the backend. Clear the
+            // thinking panel on the first chunk so the transition is seamless:
+            // thinking disappears the moment answer text appears, not before.
+            if (!accumulatedText) {
+              accumulatedThinking = "";
+              displayedThinking = "";
+              setThinkingText("");
+            }
             accumulatedText += event.delta;
-            setStreamingText(accumulatedText);
+            schedulePacing();
             break;
           case "final_message":
+            // Authoritative content from server. Update the buffer but keep
+            // pacing — flushing immediately would defeat the typing animation
+            // for short responses where final_message arrives before pacing
+            // has caught up. The pacing loop's catch-up branch handles the
+            // tail. run_complete (below) is the hard flush point.
+            sawFinalMessage = true;
             accumulatedText = event.content;
-            setStreamingText(event.content);
+            if (displayedText.length > accumulatedText.length) {
+              displayedText = accumulatedText;
+              setStreamingText(displayedText);
+            }
+            schedulePacing();
             // Now that the recap text is set, open the canvas for any artifact
             // that arrived earlier this turn (artifact_written fires before finalize).
             if (pendingPreviewArtifactId) {
@@ -280,35 +402,76 @@ export default function SessionPage() {
           case "compaction_done":
             setTraceEntries((p) => [...p, { id: uid(), type: "compaction_done", timestamp: Date.now(), before_tokens: event.before_tokens, after_tokens: event.after_tokens }]);
             break;
-          case "run_complete":
-            // With real server-side streaming, all text_delta events have
-            // already arrived before run_complete fires, so we can commit
-            // immediately — no typewriter deferral needed.
-            api.getSession(sessionId).then((d) => {
-              setSession(d.session);
-              setArtifacts(d.artifacts);
-              setMessages((prev) =>
-                mergeWithBanners(prev, d.messages.map(mapServerMessage))
+          case "run_complete": {
+            // Pacing may still be revealing the tail of accumulatedText when
+            // run_complete arrives. Defer the streaming→persisted swap until
+            // the displayed prefix has caught up so the user sees the typing
+            // animation finish naturally instead of the bubble snapping. We
+            // bound the wait via setInterval+timeout so a stuck pacing loop
+            // can't keep the UI in "streaming" forever.
+            const commit = () => {
+              flushImmediate();
+              api.getSession(sessionId).then((d) => {
+                setSession(d.session);
+                setArtifacts(d.artifacts);
+                setMessages((prev) =>
+                  mergeWithBanners(prev, d.messages.map(mapServerMessage))
+                );
+                accumulatedText = "";
+                accumulatedThinking = "";
+                displayedText = "";
+                displayedThinking = "";
+                runArtifactIds.length = 0;
+                setRunArtifactIds([]);
+                setStreamingText("");
+                setThinkingText("");
+                setIsStreaming(false);
+              }).catch(() => {
+                accumulatedText = "";
+                accumulatedThinking = "";
+                displayedText = "";
+                displayedThinking = "";
+                runArtifactIds.length = 0;
+                setRunArtifactIds([]);
+                setStreamingText("");
+                setThinkingText("");
+                setIsStreaming(false);
+              });
+            };
+
+            // Wait for pacing to finish before swapping streaming → persisted.
+            // Timeout is dynamic so long answers don't snap mid-animation.
+            const pacingDone = () =>
+              displayedText.length >= accumulatedText.length &&
+              displayedThinking.length >= accumulatedThinking.length;
+            if (pacingDone()) {
+              commit();
+            } else {
+              schedulePacing();
+              const remainingText = Math.max(0, accumulatedText.length - displayedText.length);
+              const remainingThinking = Math.max(0, accumulatedThinking.length - displayedThinking.length);
+              const projectedMs = Math.max(
+                (remainingText / FINAL_TEXT_CHARS_PER_SEC) * 1000,
+                (remainingThinking / THINKING_CHARS_PER_SEC) * 1000
               );
-              accumulatedText = "";
-              accumulatedThinking = "";
-              runArtifactIds.length = 0;
-              setRunArtifactIds([]);
-              setStreamingText("");
-              setThinkingText("");
-              setIsStreaming(false);
-            }).catch(() => {
-              accumulatedText = "";
-              accumulatedThinking = "";
-              runArtifactIds.length = 0;
-              setRunArtifactIds([]);
-              setIsStreaming(false);
-            });
+              const timeoutMs = Math.min(120000, Math.max(4000, projectedMs + 3000));
+              const start = Date.now();
+              const poll = window.setInterval(() => {
+                if (pacingDone() || Date.now() - start > timeoutMs) {
+                  window.clearInterval(poll);
+                  commit();
+                }
+              }, 80);
+            }
             break;
+          }
           case "error":
+            cancelPendingFlushes();
             setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
             accumulatedText = "";
             accumulatedThinking = "";
+            displayedText = "";
+            displayedThinking = "";
             setStreamingText("");
             setThinkingText("");
             setRunArtifactIds([]);
@@ -318,6 +481,7 @@ export default function SessionPage() {
       },
       () => {
         // Stream closed without run_complete (e.g. network blip) — refetch.
+        cancelPendingFlushes();
         if (pendingCommitRef.current) return;
         api.getSession(sessionId).then((d) => {
           setSession(d.session);
@@ -333,14 +497,28 @@ export default function SessionPage() {
       }
     );
 
-    stopRef.current = unsubscribe;
+    stopRef.current = () => {
+      cancelPendingFlushes();
+      unsubscribe();
+    };
   }, [sessionId]);
 
   // Load session on mount.
   useEffect(() => {
+    // Session route changed (or first mount): allow one server-audience hydrate
+    // for this session id.
+    if (didHydrateAudienceForSession.current !== sessionId) {
+      didHydrateAudienceForSession.current = null;
+    }
     api.getSession(sessionId).then((detail) => {
       setSession(detail.session);
-      if (detail.session.audience) setAudience(detail.session.audience);
+      if (
+        detail.session.audience &&
+        didHydrateAudienceForSession.current !== sessionId
+      ) {
+        setAudience(detail.session.audience);
+        didHydrateAudienceForSession.current = sessionId;
+      }
       setMessages((prev) =>
         mergeWithBanners(prev, detail.messages.map(mapServerMessage))
       );
@@ -371,14 +549,17 @@ export default function SessionPage() {
         router.replace(`/sessions/${sessionId}`);
         const handoffAttachedIds = detail.documents.map((d) => d.id);
         setMessages((prev) => [...prev, { id: uid(), role: "user", content: promptParam, attachedDocs: detail.documents.map((d) => d.filename) }]);
-        attachStream();
+        setIsStreaming(true);
         api.sendMessage(sessionId, promptParam, chosenAud, handoffAttachedIds)
-          .then(() =>
-            api.getSession(sessionId).then((d) => {
+          .then(() => {
+            // Open SSE only after the backend marks this run "running" so we
+            // don't subscribe to a terminal-state stream and miss real events.
+            attachStream();
+            return api.getSession(sessionId).then((d) => {
               setSession(d.session);
               window.dispatchEvent(new CustomEvent("sessions-changed"));
-            }).catch(() => {})
-          )
+            }).catch(() => {});
+          })
           .catch(() => {
             setIsStreaming(false);
             stopRef.current?.();
@@ -414,50 +595,33 @@ export default function SessionPage() {
   const handleSend = useCallback(async (text: string, attachedDocs: string[] = []) => {
     if (isStreaming) return;
 
-    // Auto-adjust audience if the prompt explicitly requests a different level.
-    // The inferred audience is applied to *this turn only* — we no longer
-    // persist it to the session. Sticky persistence made transient phrasings
-    // (e.g. "assume I'm an engineer for this one question") flip the entire
-    // session's audience, requiring a manual toggle back.
-    const inferred = inferAudience(text);
-    const resolvedAudience = inferred ?? audience;
-    if (inferred && inferred !== audience) {
-      setAudience(inferred);
-    }
+    // Use the current audience toggle value. Auto-inference via inferAudience()
+    // was silently flipping the toggle to "professional" when messages contained
+    // domain phrasing, which contradicted the user's explicit layperson/expert
+    // selection. The toggle is the sole source of truth.
+    const resolvedAudience = audience;
 
-    setMessages((prev) => {
-      // If the prompt triggered an inferred audience switch, drop a banner
-      // *before* the user message so the user can see why the next reply is
-      // in a different register.
-      const banner: ChatMessage[] =
-        inferred && inferred !== audience
-          ? [
-              {
-                id: uid(),
-                role: "system",
-                systemKind: "audience_change",
-                content: `switched to ${inferred} mode`,
-              },
-            ]
-          : [];
-      return [
-        ...prev,
-        ...banner,
-        { id: uid(), role: "user", content: text, attachedDocs },
-      ];
-    });
-    attachStream();
+    setIsStreaming(true);
+    setMessages((prev) => [
+      ...prev,
+      { id: uid(), role: "user", content: text, attachedDocs },
+    ]);
+
     try {
-      // Persist the documents that were present at send time so the chip
-      // re-renders correctly on reload. Source-of-truth for IDs is the
-      // current `documents` state (kept in sync with the backend via
-      // session refresh + upload handlers).
+      // Send the message first so the backend sets last_run_state = "running"
+      // before the SSE EventSource connects. Opening attachStream() before
+      // sendMessage reaches the server causes the SSE endpoint to see a
+      // terminal last_run_state (e.g. "completed") and return a fake
+      // run_complete immediately — the real run then publishes into an
+      // unsubscribed bus and the UI appears stuck until the browser is refreshed.
       await api.sendMessage(
         sessionId,
         text,
         resolvedAudience,
         documents.map((d) => d.id)
       );
+      // Now that the backend has the run in flight, open the SSE stream.
+      attachStream();
       // Refresh session so the auto-generated title shows up in both the
       // header and the sidebar without requiring a page reload.
       api.getSession(sessionId).then((d) => {
@@ -515,7 +679,7 @@ export default function SessionPage() {
       await api.truncateAfter(sessionId, assistantMessageId);
     } catch {}
     setMessages((prev) => prev.filter((_, i) => i < idx));
-    attachStream();
+    setIsStreaming(true);
     try {
       // Re-send with the same doc set the user had at retry time — keeps the
       // re-rendered user bubble's chips consistent with what the agent saw.
@@ -525,6 +689,8 @@ export default function SessionPage() {
         audience,
         documents.map((d) => d.id)
       );
+      // Subscribe only after the backend run is definitely live.
+      attachStream();
     } catch {
       setIsStreaming(false);
       stopRef.current?.();
@@ -541,7 +707,7 @@ export default function SessionPage() {
       const kept = idx >= 0 ? prev.slice(0, idx) : prev;
       return [...kept, { id: uid(), role: "user", content: newContent, attachedDocs: prev[idx]?.attachedDocs }];
     });
-    attachStream();
+    setIsStreaming(true);
     try {
       await api.sendMessage(
         sessionId,
@@ -549,6 +715,8 @@ export default function SessionPage() {
         audience,
         documents.map((d) => d.id)
       );
+      // Subscribe only after the backend run is definitely live.
+      attachStream();
     } catch {
       setIsStreaming(false);
       stopRef.current?.();
@@ -764,3 +932,4 @@ export default function SessionPage() {
     </div>
   );
 }
+

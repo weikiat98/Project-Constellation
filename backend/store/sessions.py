@@ -509,7 +509,10 @@ async def insert_chunk(
 
 async def get_chunk(chunk_id: str) -> Optional[dict]:
     async with get_db() as db:
-        cursor = await db.execute("SELECT * FROM chunks WHERE id = ?", (chunk_id,))
+        cursor = await db.execute(
+            "SELECT * FROM chunks WHERE id = ? COLLATE NOCASE",
+            (chunk_id,),
+        )
         row = await cursor.fetchone()
     return dict(row) if row else None
 

@@ -44,7 +44,7 @@ async def _run_async(args):
 
     # Ingest document
     print(f"Loading document: {input_path.name} …", file=sys.stderr)
-    store = DocumentStore(chunk_size=getattr(args, "chunk_size", 8000))
+    store = DocumentStore(chunk_tokens=getattr(args, "chunk_tokens", 4000))
     result = await store.ingest(session_id, str(input_path))
     print(
         f"Ingested {result['chunk_count']} chunks "

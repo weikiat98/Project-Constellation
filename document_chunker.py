@@ -6,17 +6,22 @@ Helper functions for splitting large documents into manageable chunks
 from typing import List, Dict, Tuple
 import re
 
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count using the ~4 chars/token rule for English prose."""
+    return len(text) // 4
+
+
 class DocumentChunker:
     """Handles intelligent document chunking based on structure"""
-    
-    def __init__(self, max_chunk_size: int = 8000):
+
+    def __init__(self, max_chunk_tokens: int = 4000):
         """
         Initialize chunker
-        
+
         Args:
-            max_chunk_size: Maximum characters per chunk
+            max_chunk_tokens: Maximum tokens per chunk (estimated at ~4 chars/token)
         """
-        self.max_chunk_size = max_chunk_size
+        self.max_chunk_tokens = max_chunk_tokens
         
     def chunk_by_pages(self, content: str, pages_per_chunk: int = 10) -> List[Dict[str, any]]:
         """
@@ -54,7 +59,7 @@ class DocumentChunker:
             page_content = pages[i + 1]
             i += 2
 
-            if len(current_chunk) + len(page_content) > self.max_chunk_size or \
+            if _estimate_tokens(current_chunk) + _estimate_tokens(page_content) > self.max_chunk_tokens or \
                len(current_pages) >= pages_per_chunk:
                 if current_chunk:
                     chunks.append({
@@ -119,7 +124,7 @@ class DocumentChunker:
                 current_chunk += line + '\n'
                 
                 # Check if chunk is too large
-                if len(current_chunk) > self.max_chunk_size:
+                if _estimate_tokens(current_chunk) > self.max_chunk_tokens:
                     chunks.append({
                         "content": current_chunk,
                         "chapter": current_chapter,
@@ -153,7 +158,7 @@ class DocumentChunker:
         chunk_num = 0
         
         for para in paragraphs:
-            if len(current_chunk) + len(para) > self.max_chunk_size and current_chunk:
+            if _estimate_tokens(current_chunk) + _estimate_tokens(para) > self.max_chunk_tokens and current_chunk:
                 chunks.append({
                     "content": current_chunk,
                     "chunk_id": chunk_num,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { normalizeChunkId } from "@/lib/citations";
 
 interface Props {
   chunkId: string;
@@ -28,18 +29,19 @@ export function clearCitationCache(): void {
 }
 
 async function fetchMeta(id: string): Promise<ChunkMeta> {
-  if (_cache.has(id)) return _cache.get(id) ?? null;
-  const existing = _inFlight.get(id);
+  const normalized = normalizeChunkId(id);
+  if (_cache.has(normalized)) return _cache.get(normalized) ?? null;
+  const existing = _inFlight.get(normalized);
   if (existing) return existing;
-  const p = fetch(`/api/chunks/${id}`)
+  const p = fetch(`/api/chunks/${normalized}`)
     .then((r) => (r.ok ? r.json() : null))
     .then((data: ChunkMeta) => {
-      _cache.set(id, data);
+      _cache.set(normalized, data);
       return data;
     })
     .catch(() => null)
-    .finally(() => _inFlight.delete(id));
-  _inFlight.set(id, p);
+    .finally(() => _inFlight.delete(normalized));
+  _inFlight.set(normalized, p);
   return p;
 }
 
@@ -47,47 +49,54 @@ function shortenFilename(name: string, max = 24): string {
   // Drop extension, collapse whitespace, trim to max with ellipsis.
   const base = name.replace(/\.[^.]+$/, "").trim();
   if (base.length <= max) return base;
-  return base.slice(0, max - 1).trimEnd() + "…";
+  return base.slice(0, max - 1).trimEnd() + "\u2026";
 }
 
 const LOADING = Symbol("loading");
 
 export default function CitationLink({ chunkId, onClick }: Props) {
-  const cached = _cache.has(chunkId) ? (_cache.get(chunkId) ?? null) : LOADING;
+  const normalizedChunkId = normalizeChunkId(chunkId);
+  const cached = _cache.has(normalizedChunkId)
+    ? (_cache.get(normalizedChunkId) ?? null)
+    : LOADING;
   const [meta, setMeta] = useState<ChunkMeta | typeof LOADING>(cached);
 
   useEffect(() => {
-    if (_cache.has(chunkId)) {
-      setMeta(_cache.get(chunkId) ?? null);
+    if (_cache.has(normalizedChunkId)) {
+      setMeta(_cache.get(normalizedChunkId) ?? null);
       return;
     }
     setMeta(LOADING);
-    fetchMeta(chunkId).then((m) => setMeta(m));
-  }, [chunkId]);
+    fetchMeta(normalizedChunkId).then((m) => setMeta(m));
+  }, [normalizedChunkId]);
 
-  // Prefer: "filename p.N", "filename §id", "filename", "p.N", "§id".
+  // Prefer: "filename p.N", "filename \u00A7id", "filename", "p.N", "\u00A7id".
   let label: string;
   if (meta === LOADING) {
-    label = "…";
+    label = "source";
   } else {
     const fname = meta?.filename ? shortenFilename(meta.filename) : null;
-    if (fname && meta?.page) label = `${fname} p.${meta.page}`;
-    else if (fname && meta?.section_id) label = `${fname} §${meta.section_id}`;
+    if (fname && typeof meta?.page === "number") label = `${fname} p.${meta.page}`;
+    else if (fname && meta?.section_id) label = `${fname} \u00A7${meta.section_id}`;
     else if (fname) label = fname;
-    else if (meta?.page) label = `p.${meta.page}`;
-    else if (meta?.section_id) label = `§${meta.section_id}`;
-    else label = chunkId.slice(0, 6);
+    else if (typeof meta?.page === "number") label = `p.${meta.page}`;
+    else if (meta?.section_id) label = `\u00A7${meta.section_id}`;
+    else label = `source ${normalizedChunkId.slice(0, 4)}`;
   }
+
+  // Narrow away the LOADING symbol so tooltip access is type-safe.
+  const resolvedMeta = meta === LOADING ? null : meta;
+  const pageSuffix =
+    typeof resolvedMeta?.page === "number" ? ` (p.${resolvedMeta.page})` : "";
+  const title = resolvedMeta?.filename
+    ? `View source \u2014 ${resolvedMeta.filename}${pageSuffix}`
+    : "View source passage";
 
   return (
     <button
-      onClick={() => onClick(chunkId)}
+      onClick={() => onClick(normalizedChunkId)}
       className="citation-link mx-0.5"
-      title={
-        meta?.filename
-          ? `View source — ${meta.filename}${meta.page ? ` (p.${meta.page})` : ""}`
-          : `View source — chunk ${chunkId.slice(0, 8)}`
-      }
+      title={title}
     >
       [{label}]
     </button>

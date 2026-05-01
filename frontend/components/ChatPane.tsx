@@ -23,7 +23,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { api, type Artifact, type Document, type TokenCount } from "@/lib/api";
-import { CITATION_RE, UUID_RE } from "@/lib/citations";
+import { CITATION_RE, extractCitationIds } from "@/lib/citations";
 import CitationLink from "./CitationLink";
 import ArtifactCard from "./ArtifactCard";
 import ContextMeter from "./ContextMeter";
@@ -37,6 +37,53 @@ import type { TraceEntry } from "./AgentTrace";
 
 // No client-side typewriter needed: the backend now streams `text_delta`
 // events incrementally, so `streamingText` grows in real time as chunks arrive.
+
+// Streaming-aware markdown sanitizer: while text is mid-stream the buffer can
+// end inside a code fence, an unclosed inline span, or a half-written link.
+// ReactMarkdown renders that broken syntax literally (visible backticks /
+// asterisks) until the closing token finally arrives. Soft-close the
+// unterminated constructs purely for the in-flight render so the prose stays
+// formatted; the authoritative final content replaces this on `final_message`.
+function sanitizeStreamingMarkdown(text: string): string {
+  if (!text) return text;
+  let out = text;
+
+  // 1. Unterminated fenced code block (```…). If the count of ``` lines is
+  //    odd, append a closing fence on its own line.
+  const fenceMatches = out.match(/^```/gm);
+  if (fenceMatches && fenceMatches.length % 2 === 1) {
+    out += (out.endsWith("\n") ? "" : "\n") + "```";
+    // Inside a code fence we don't want to count inline tokens (they're
+    // literal characters), so return early.
+    return out;
+  }
+
+  // 2. Unterminated inline code (single backtick). Count backticks on the
+  //    final line; if odd, close it.
+  const lastNl = out.lastIndexOf("\n");
+  const tail = lastNl === -1 ? out : out.slice(lastNl + 1);
+  const inlineTicks = (tail.match(/`/g) || []).length;
+  if (inlineTicks % 2 === 1) out += "`";
+
+  // 3. Unterminated bold (**) and italic (*). Count occurrences and pad if
+  //    odd. Bold is checked first since ** is a superset of *.
+  const bold = (out.match(/\*\*/g) || []).length;
+  if (bold % 2 === 1) out += "**";
+  // Strip bold pairs from a copy before counting single-* italics so we
+  // don't mistake the legs of a bold token for an unmatched italic.
+  const sansBold = out.replace(/\*\*/g, "");
+  const italic = (sansBold.match(/\*/g) || []).length;
+  if (italic % 2 === 1) out += "*";
+
+  // 4. Unterminated link / image syntax: `[text](http…` without a closing
+  //    paren. ReactMarkdown otherwise leaves the bracket+paren visible until
+  //    the URL is complete. Detect a final unclosed `(` after a `]` and
+  //    suppress rendering by closing the paren with a placeholder fragment.
+  const openLinkParen = /\]\([^)\s]*$/.test(out);
+  if (openLinkParen) out += ")";
+
+  return out;
+}
 
 // Context passed through markdown rendering so a text node knows how to decorate
 // itself: citations (always) + search highlights (when a query is active).
@@ -113,7 +160,7 @@ function decorateText(text: string, keyPrefix: string, ctx: RenderContext): Reac
         )
       );
     }
-    const ids = match[1].match(UUID_RE) ?? [];
+    const ids = extractCitationIds(match[0]);
     ids.forEach((id, i) => {
       out.push(
         <CitationLink key={`${keyPrefix}-c${match!.index}-${i}`} chunkId={id} onClick={ctx.onCitation} />
@@ -278,6 +325,10 @@ export default function ChatPane({
   const [tokenCount, setTokenCount] = useState<TokenCount | null>(null);
   const [countingTokens, setCountingTokens] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // "User is scrolled away from the bottom" — when true we pause auto-scroll
+  // so reading earlier messages mid-stream isn't fought by every text_delta.
+  // Resumes the moment the user scrolls back to (or near) the bottom.
+  const [userPinnedToBottom, setUserPinnedToBottom] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -301,9 +352,32 @@ export default function ChatPane({
     return () => window.clearTimeout(handle);
   }, [input, sessionId, documents, isStreaming]);
 
+  // Track whether the user is near the bottom of the scroll container. If they
+  // scroll up mid-stream we stop auto-scrolling so re-reading earlier messages
+  // isn't fought by every incoming text_delta. The 80px threshold matches the
+  // pattern used on claude.ai — "near enough" still counts as pinned.
   useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setUserPinnedToBottom(distanceFromBottom < 80);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Auto-scroll only when the user is pinned to the bottom. New token bursts
+  // therefore don't yank a user who has scrolled up to inspect a citation.
+  useEffect(() => {
+    if (!userPinnedToBottom) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText]);
+  }, [messages, streamingText, userPinnedToBottom]);
+
+  function jumpToBottom() {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    setUserPinnedToBottom(true);
+  }
 
   const q = searchQuery.trim().toLowerCase();
 
@@ -453,6 +527,7 @@ export default function ChatPane({
                   text={thinkingText}
                   live
                   defaultOpen
+                  onCitationClick={onCitationClick}
                 />
               )}
 
@@ -470,10 +545,10 @@ export default function ChatPane({
                           currentMatchIndex: -1,
                         })}
                       >
-                        {streamingText}
+                        {sanitizeStreamingMarkdown(streamingText)}
                       </ReactMarkdown>
                     </div>
-                    <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom" />
+                    <span className="stream-cursor" aria-hidden="true" />
                   </div>
                   {streamingArtifactIds && streamingArtifactIds.length > 0 && (
                     <div className="mt-3 flex flex-col items-start gap-2">
@@ -503,6 +578,19 @@ export default function ChatPane({
 
         <div ref={bottomRef} />
       </div>
+
+      {/* Floating "scroll to bottom" button — appears while a stream is in
+          flight and the user has scrolled up to read earlier content. Mirrors
+          the affordance on claude.ai so the auto-scroll pause feels recoverable. */}
+      {!userPinnedToBottom && (
+        <button
+          onClick={jumpToBottom}
+          className="absolute bottom-28 left-1/2 -translate-x-1/2 bg-[#1a1d27] hover:bg-[#252938] border border-[#2d3148] text-slate-300 hover:text-slate-100 rounded-full p-2 shadow-lg transition z-10"
+          title="Scroll to latest"
+        >
+          <ChevronDown className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Inline Agent Trace panel */}
       <AgentTracePanel entries={traceEntries} streaming={isStreaming} />
@@ -782,7 +870,7 @@ function MessageRow({
       <div className="flex-1 min-w-0">
         {msg.thinking && (
           <div className="mb-3">
-            <ThinkingPanel text={msg.thinking} live={false} />
+            <ThinkingPanel text={msg.thinking} live={false} onCitationClick={onCitationClick} />
           </div>
         )}
         {msg.content.trim() ? (
@@ -842,10 +930,12 @@ function ThinkingPanel({
   text,
   live,
   defaultOpen = false,
+  onCitationClick,
 }: {
   text: string;
   live: boolean;
   defaultOpen?: boolean;
+  onCitationClick?: (chunkId: string) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen || live);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -884,7 +974,17 @@ function ThinkingPanel({
           ref={scrollRef}
           className="max-h-64 overflow-y-auto px-3 py-2 text-xs text-slate-400 whitespace-pre-wrap leading-relaxed border-t border-[#2d3148] scroll-smooth font-mono"
         >
-          {text || (live ? "Agents are starting up…" : "(no reasoning recorded)")}
+          {text
+            ? (onCitationClick
+                ? decorateText(text, "th", {
+                    onCitation: onCitationClick,
+                    messageId: "thinking",
+                    baseMatchIndex: 0,
+                    query: "",
+                    currentMatchIndex: -1,
+                  })
+                : text)
+            : (live ? "Agents are starting up…" : "(no reasoning recorded)")}
           {live && <span className="inline-block w-1 h-3 bg-purple-400/70 animate-pulse ml-0.5 align-text-bottom" />}
         </div>
       )}

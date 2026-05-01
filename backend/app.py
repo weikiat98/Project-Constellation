@@ -16,6 +16,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -340,22 +341,32 @@ async def stream_events(session_id: str):
     if not session:
         raise HTTPException(404, "Session not found")
 
-    # If no run is in flight, return a one-shot stream that closes immediately.
-    # Without this, opening /stream against an idle session would block forever
-    # on an empty queue — the consumer awaits an event that will never arrive,
-    # holding the SSE connection open until the browser/server timeout fires.
-    if session.get("last_run_state") != "running":
-        async def _empty_stream():
-            yield 'data: {"type": "run_complete", "final": ""}\n\n'
+    # Guard against hanging open connections on truly-idle sessions. We only
+    # close early when the run has already reached a terminal state (completed /
+    # error / cancelled). We deliberately allow `idle` through here because
+    # the frontend calls attachStream() and sendMessage() in the same tick —
+    # the SSE connection races submit_message's `last_run_state = "running"`
+    # DB write, so the state may still read `idle` when we arrive. Blocking
+    # that connection would swallow all events from the very first turn.
+    terminal_states = {"completed", "error", "cancelled"}
+    run_state = session.get("last_run_state", "idle")
+    if run_state in terminal_states:
+        # Check whether the bus actually has a live run despite the DB state
+        # (e.g. a new run kicked off since the DB write). If it does, subscribe
+        # normally; if not, close immediately so the SSE consumer isn't stuck.
+        existing_bus = event_registry._buses.get(session_id)
+        if existing_bus is None or existing_bus.closed:
+            async def _empty_stream():
+                yield 'data: {"type": "run_complete", "final": ""}\n\n'
 
-        return StreamingResponse(
-            _empty_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
+            return StreamingResponse(
+                _empty_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
     bus = event_registry.get_or_create(session_id)
 
@@ -519,7 +530,8 @@ async def get_artifact_endpoint(artifact_id: str):
 @app.get("/api/chunks/{chunk_id}")
 async def get_chunk_endpoint(chunk_id: str):
     from backend.store.sessions import get_chunk, get_db
-    chunk = await get_chunk(chunk_id)
+    normalized_chunk_id = (chunk_id or "").strip().lower()
+    chunk = await get_chunk(normalized_chunk_id or chunk_id)
     if not chunk:
         raise HTTPException(404, "Chunk not found")
 
@@ -537,10 +549,33 @@ async def get_chunk_endpoint(chunk_id: str):
         if row:
             filename = row["original_filename"] or row["filename"]
 
+    metadata = {}
+    raw_metadata = chunk.get("metadata")
+    if isinstance(raw_metadata, str) and raw_metadata:
+        try:
+            metadata = json.loads(raw_metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    section_id = (
+        chunk.get("section_id")
+        or metadata.get("section_id")
+        or metadata.get("chapter_title")
+    )
+    page = (
+        chunk.get("page")
+        or metadata.get("start_page")
+        or metadata.get("page_number")
+        or metadata.get("page")
+    )
+
     return {
         "id": chunk["id"],
         "content": chunk["content"],
-        "section_id": chunk.get("section_id"),
-        "page": chunk.get("page"),
+        "idx": chunk.get("idx"),
+        "section_id": section_id,
+        "page": page,
         "filename": filename,
     }

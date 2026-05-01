@@ -4,13 +4,14 @@ A full-stack multi-agent system for deep analysis of lengthy and technical docum
 
 Every claim in every answer carries a citation. Every citation is clickable. Every source is verifiable.
 
-> **Version 2.2** — UAT-driven fix release on top of the 2.0 rewrite. See [CHANGELOG.md](CHANGELOG.md) for the full release history and [UAT/25April_UAT_Resolution_Plan.md](UAT/25April_UAT_Resolution_Plan.md) for the per-issue fix detail.
+> **Version 2.3** — Adaptive thinking, run cancellation, multi-file upload, and robustness fixes. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ---
 
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [What's new in 2.3](#whats-new-in-23)
 - [What's new in 2.2](#whats-new-in-22)
 - [What's new in 2.1](#whats-new-in-21)
 - [Simplified architecture](#simplified-architecture)
@@ -37,6 +38,24 @@ Four product goals shape every feature:
 2. **Navigable** — FTS5 keyword search, cross-reference resolution, and defined-term lookup inside the document.
 3. **Verifiable** — every factual claim links back to its source chunk. Subagent output missing citations is flagged and rejected.
 4. **Actionable** — structured deliverables (obligation tables, comparisons, summaries) are persisted as downloadable artifacts (Markdown, HTML, CSV).
+
+---
+
+## What's new in 2.3
+
+Robustness and capability improvements on top of the 2.2 UAT fix release.
+
+- **Adaptive thinking** — the Lead now passes `{"type": "adaptive"}` to `claude-sonnet-4-6` and `claude-opus-4-7`, letting the model decide when and how much to reason. Interleaved thinking is automatically active so the Lead can reflect between tool calls.
+- **Server-side streaming of the final answer** — the Lead chunks the final answer into 20-character segments emitted as `text_delta` events (15 ms apart) so the chat pane renders incrementally without a client-side typewriter fighting the SSE stream.
+- **Default model is now `claude-sonnet-4-6`** — Haiku was unreliable at audience register differentiation. Sonnet is the new development default; switch to `claude-opus-4-6` for production.
+- **Run cancellation** — `POST /api/sessions/{id}/cancel` stops the in-flight Lead run at its next iteration. The session transitions to `last_run_state = "cancelled"` and the SSE stream closes cleanly.
+- **Multi-file upload** — the upload zone now accepts multiple files in a single drag-drop or file-picker action. Each file is ingested sequentially and the session document list updates after each one.
+- **Idle SSE guard** — opening `/stream` on a session with no active run now returns a synthetic `run_complete` immediately instead of hanging the connection indefinitely.
+- **Citation links in plain-text artifacts** — `[chunk_id]` tokens in plain-text artifacts are now rendered as clickable citation links, consistent with Markdown and HTML artifacts.
+- **Token counter uses attached doc IDs** — `count_tokens` now filters the doc-index to only the documents attached to the current message, matching what the Lead actually sends to the model.
+- **Document chunker page numbers fixed** — page numbers in chunk metadata now reflect the actual page markers in the document instead of an incrementing counter.
+- **FTS5 safety extended** — legal-style queries containing dots, hyphens, slashes, and section signs (`§`) are preserved through tokenisation instead of being stripped to single letters.
+- **`PRAGMA foreign_keys=ON` applied per-connection** — foreign-key enforcement is now correctly set on every SQLite connection; previously it was silently disabled on all connections after the first, breaking cascade deletes.
 
 ---
 

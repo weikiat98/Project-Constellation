@@ -26,7 +26,7 @@ from backend.store.sessions import (
     create_agent_run,
     finish_agent_run,
 )
-from backend.orchestrator.tools import LEAD_TOOLS, handle_tool
+from backend.orchestrator.tools import LEAD_TOOLS, handle_tool, normalize_chunk_citation_syntax
 from backend.orchestrator.subagent import run_subagent
 from backend.orchestrator.compactor import maybe_compact, _count_tokens_approx
 from backend.orchestrator.event_bus import SessionEventBus
@@ -140,6 +140,7 @@ Put the ENTIRE formatted answer inside the `result` argument of `finalize`.
 Always use Markdown formatting in your finalize `result` to maximise readability:
 - Use `#` / `##` / `###` headings to organise sections
 - Use `---` horizontal dividers between major sections
+- Leave a blank line before and after the horizontal dividers between major sections for readability
 - Use bullet lists (`-`) for unordered items and numbered lists (`1.`) for sequential steps
 - Use **bold** for key terms or labels
 Apply formatting for both document-based answers and plain text message responses.
@@ -235,6 +236,86 @@ def _build_tools(use_advisor: bool) -> tuple[list[dict], list[str]]:
         "max_uses": 3,
     }
     return LEAD_TOOLS + [advisor_tool], ["advisor-tool-2026-03-01"]
+
+
+def _extract_json_string_field_prefix(raw_json: str, field: str) -> str:
+    """Best-effort incremental extractor for a JSON string field.
+
+    Used to stream `finalize.result` as it is being generated via
+    `input_json_delta` events, before the tool call fully closes.
+    """
+    key = f'"{field}"'
+    key_pos = raw_json.find(key)
+    if key_pos < 0:
+        return ""
+
+    i = key_pos + len(key)
+    n = len(raw_json)
+
+    while i < n and raw_json[i].isspace():
+        i += 1
+    if i >= n or raw_json[i] != ":":
+        return ""
+    i += 1
+
+    while i < n and raw_json[i].isspace():
+        i += 1
+    if i >= n or raw_json[i] != '"':
+        return ""
+    i += 1
+
+    out: list[str] = []
+    escape_map = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+
+    while i < n:
+        ch = raw_json[i]
+        if ch == '"':
+            break
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+
+        # Escape sequence.
+        if i + 1 >= n:
+            break
+        esc = raw_json[i + 1]
+        if esc == "u":
+            if i + 5 >= n:
+                break
+            code = raw_json[i + 2 : i + 6]
+            if any(c not in "0123456789abcdefABCDEF" for c in code):
+                break
+            out.append(chr(int(code, 16)))
+            i += 6
+            continue
+
+        out.append(escape_map.get(esc, esc))
+        i += 2
+
+    return "".join(out)
+
+
+def _publish_text_delta_smooth(
+    bus: SessionEventBus,
+    agent_id: str,
+    text: str,
+    chunk_size: int = 24,
+) -> None:
+    """Emit text deltas in small chunks to avoid bursty UI jumps."""
+    if not text:
+        return
+    for i in range(0, len(text), chunk_size):
+        bus.publish("text_delta", agent_id=agent_id, delta=text[i : i + chunk_size])
 
 
 async def run_lead(
@@ -372,9 +453,25 @@ async def run_lead(
             # (routed to the Thinking panel) and text blocks (inter-tool
             # planning prose, also routed to Thinking — the real user-facing
             # answer is delivered by the `finalize` tool below).
+            finalize_block_index: int | None = None
+            finalize_input_buffer = ""
+            streamed_finalize_prefix = ""
+            finalize_thinking_cleared = False
             async for event in stream:
                 event_type = getattr(event, "type", None)
-                if event_type == "content_block_delta":
+                if event_type == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    if (
+                        finalize_block_index is None
+                        and getattr(block, "type", None) == "tool_use"
+                        and getattr(block, "name", None) == "finalize"
+                    ):
+                        idx = getattr(event, "index", None)
+                        if isinstance(idx, int):
+                            finalize_block_index = idx
+                            finalize_input_buffer = ""
+                            streamed_finalize_prefix = ""
+                elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     delta_type = getattr(delta, "type", None)
                     if delta_type == "thinking_delta" and hasattr(delta, "thinking"):
@@ -382,6 +479,25 @@ async def run_lead(
                     elif delta_type == "text_delta" and hasattr(delta, "text"):
                         # Between-tool prose is internal planning, not the final answer.
                         bus.publish("thinking_delta", agent_id=lead_run_id, delta=delta.text)
+                    elif (
+                        delta_type == "input_json_delta"
+                        and finalize_block_index is not None
+                        and getattr(event, "index", None) == finalize_block_index
+                        and hasattr(delta, "partial_json")
+                    ):
+                        # True token streaming for finalize: decode the partial JSON
+                        # as it arrives and forward newly generated suffix only.
+                        finalize_input_buffer += delta.partial_json
+                        current_prefix = _extract_json_string_field_prefix(
+                            finalize_input_buffer, "result"
+                        )
+                        if len(current_prefix) > len(streamed_finalize_prefix):
+                            if not finalize_thinking_cleared:
+                                bus.publish("thinking_clear", agent_id=lead_run_id)
+                                finalize_thinking_cleared = True
+                            new_suffix = current_prefix[len(streamed_finalize_prefix):]
+                            _publish_text_delta_smooth(bus, lead_run_id, new_suffix)
+                            streamed_finalize_prefix = current_prefix
             response = await stream.get_final_message()
 
         tokens_in += response.usage.input_tokens
@@ -399,12 +515,12 @@ async def run_lead(
             for block in response.content:
                 if block.type == "text":
                     final_answer += block.text
+            final_answer = normalize_chunk_citation_syntax(final_answer)
             if final_answer:
                 bus.publish("thinking_clear", agent_id=lead_run_id)
-                _CHUNK = 20
-                for i in range(0, len(final_answer), _CHUNK):
-                    bus.publish("text_delta", agent_id=lead_run_id, delta=final_answer[i:i + _CHUNK])
-                    await asyncio.sleep(0)
+                # Note: final_answer was already streamed incrementally via text_delta
+                # during the input_json_delta phase (lines 474-487). Publishing
+                # final_message here provides the canonical full text to the frontend.
                 bus.publish("final_message", content=final_answer)
                 bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)
@@ -461,12 +577,12 @@ async def run_lead(
                 spawn_calls.append({"block_id": block.id, "input": block.input})
 
             elif block.name == "finalize":
-                final_answer = (block.input.get("result") or "").strip()
+                final_answer = normalize_chunk_citation_syntax(block.input.get("result") or "")
                 # Safety net: if the model called write_artifact this turn but
                 # left `result` empty or trivially short (< ~25 words), backfill
                 # a minimal message pointing at the artifact(s). The system
                 # prompt requires a full recap; this just prevents a silent UI.
-                if artifacts_this_turn and len(final_answer) < 500:
+                if artifacts_this_turn and len(final_answer.strip()) < 500:
                     names = ", ".join(a["name"] for a in artifacts_this_turn if a.get("name"))
                     fallback = (
                         f"I've prepared a detailed write-up in the generated file"
@@ -475,14 +591,21 @@ async def run_lead(
                         f"and let me know if you'd like me to dig deeper into any specific section."
                     )
                     final_answer = final_answer or fallback
-                # Clear the thinking panel, then stream the final answer as
-                # real text_delta chunks so the frontend renders incrementally
-                # without needing a fake client-side typewriter.
-                bus.publish("thinking_clear", agent_id=lead_run_id)
-                _CHUNK = 20
-                for i in range(0, len(final_answer), _CHUNK):
-                    bus.publish("text_delta", agent_id=lead_run_id, delta=final_answer[i:i + _CHUNK])
-                    await asyncio.sleep(0)
+                # `finalize.result` is streamed during input_json_delta handling
+                # above. Here we only reconcile any tail that wasn't emitted
+                # incrementally (e.g. parser boundary edge cases / fallbacks).
+                if not finalize_thinking_cleared:
+                    bus.publish("thinking_clear", agent_id=lead_run_id)
+                    finalize_thinking_cleared = True
+                if final_answer.startswith(streamed_finalize_prefix):
+                    remainder = final_answer[len(streamed_finalize_prefix):]
+                else:
+                    # Parser drift safeguard: if incremental decode diverged,
+                    # avoid duplicating incorrect deltas and rely on
+                    # final_message for canonical content.
+                    remainder = ""
+                if remainder:
+                    _publish_text_delta_smooth(bus, lead_run_id, remainder)
                 bus.publish("final_message", content=final_answer)
                 bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)
@@ -571,7 +694,7 @@ async def run_lead(
         for block in response.content if response else []:
             if getattr(block, "type", None) == "text":
                 final_answer += block.text
-        final_answer = final_answer.strip()
+        final_answer = normalize_chunk_citation_syntax(final_answer.strip())
 
     if not final_answer and artifacts_this_turn:
         # Same shape as the `finalize`-branch fallback, but worded to reflect

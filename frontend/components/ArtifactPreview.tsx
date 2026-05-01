@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import type { Artifact } from "@/lib/api";
 // Citation regex centralised in lib/citations — both ChatPane and this
 // component import it from there so the literal isn't duplicated.
-import { CITATION_RE, UUID_RE, downloadArtifact } from "@/lib/citations";
+import { CITATION_RE, downloadArtifact, extractCitationIds } from "@/lib/citations";
 import CitationLink from "./CitationLink";
 
 const WIDTH_STORAGE_KEY = "artifact-preview-width";
@@ -23,7 +23,7 @@ function injectCitations(nodes: React.ReactNode, onCitation: (id: string) => voi
     CITATION_RE.lastIndex = 0;
     while ((match = CITATION_RE.exec(text)) !== null) {
       if (match.index > last) parts.push(text.slice(last, match.index));
-      const ids = match[1].match(UUID_RE) ?? [];
+      const ids = extractCitationIds(match[0]);
       ids.forEach((id, i) => {
         parts.push(<CitationLink key={`${keyPrefix}-${match!.index}-${i}`} chunkId={id} onClick={onCitation} />);
       });

@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.3.0] — 2026-04-29: Adaptive thinking, run cancellation, chunker & robustness fixes
+
+### Added
+
+- **Run cancellation endpoint** — `POST /api/sessions/{id}/cancel` signals the in-flight Lead run to stop at its next iteration. The Lead exits cleanly (emits `final_message` + `run_complete`) and the session row transitions to `last_run_state = "cancelled"`. Idempotent — calling on an idle session returns `{ cancelled: false }`. Per-session `asyncio.Event` objects are tracked in `_cancel_events`; stale events are dropped in `_run`'s `finally` block so they can't abort a subsequent run. See [backend/app.py](backend/app.py).
+- **Idle SSE stream guard** — `GET /api/sessions/{id}/stream` now checks `last_run_state` before subscribing to the event bus. If no run is in flight, it returns a one-shot synthetic `run_complete` event and closes immediately, preventing the consumer from hanging indefinitely on an empty queue.
+- **`document_exists()` helper** — new `async def document_exists(document_id)` in [backend/store/sessions.py](backend/store/sessions.py). Used by extractor tasks to abort gracefully if the document is deleted between upload and extraction, preventing orphan row inserts.
+- **Safe extractor task wrapper** — `_safe_extract` in [backend/app.py](backend/app.py) wraps each background extractor call to swallow exceptions as warnings and skip the run if the document no longer exists, eliminating "Task exception was never retrieved" noise.
+- **Plain-text artifact citation links** — plain-text artifacts in [ArtifactPreview](frontend/components/ArtifactPreview.tsx) now render via a `PlainTextWithCitations` component that parses and injects clickable `CitationLink` elements, consistent with Markdown and HTML artifact rendering.
+- **Centralised citation regex** — citation UUID pattern is now defined once in [frontend/lib/citations.ts](frontend/lib/citations.ts) and imported by all consumers (`ChatPane`, `CitationLink`, `ArtifactPreview`), eliminating drift between implementations.
+- **Citation cache cleared on document deletion** — deleting an uploaded document from a session now also purges that document's citation cache entries so stale source-drawer lookups no longer return dead data.
+- **AbortController in SourceDrawer** — [SourceDrawer](frontend/components/SourceDrawer.tsx) now creates an `AbortController` per fetch and cancels the in-flight request when the user switches chunks quickly, preventing stale responses from overwriting fresher results.
+- **Artifact preview panel width on resize** — [ArtifactPreview](frontend/components/ArtifactPreview.tsx) now recalculates its available width on `window.resize` events so the panel doesn't overflow or collapse after the user resizes the browser window.
+
+### Changed
+
+- **Default Lead model changed to `claude-sonnet-4-6`** — Haiku (`claude-haiku-4-5-20251001`) proved unreliable for audience register differentiation; Sonnet is the new development default. The comment in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) was updated accordingly. `ANTHROPIC_MODEL` still overrides all three roles.
+- **Adaptive thinking enabled on Sonnet / Opus** — `run_lead` now passes `{"type": "adaptive"}` as the `thinking` parameter when `MODEL` is `claude-sonnet-4-6` or `claude-opus-4-7`. Interleaved thinking is automatically active, letting the model reason between tool calls. The stream handler was reworked to iterate raw events (`content_block_delta`) and dispatch `thinking_delta` blocks to the Thinking panel and `text_delta` (between-tool prose) also to the panel.
+- **Final answer delivered as server-side `text_delta` chunks** — previously the final answer was sent as a single `final_message` and the frontend used a client-side typewriter (`useTypewriter`). The Lead now chunks the answer into 20-character segments, emitting each as a `text_delta` with a 15 ms sleep between them so the SSE consumer flushes each delta incrementally. The `final_message` event still follows immediately to give the frontend the canonical full answer.
+- **Token counting respects attached document IDs** — `POST /api/sessions/{id}/count_tokens` now accepts `attached_document_ids` in the request body (`TokenCountRequest`) and filters the doc-index to only the attached documents, matching what `run_lead` actually sends to the model. Resolves C3 in BUG_REPORT.md.
+- **Token counting no longer wraps prompts for document-free sessions** — when no documents are attached the `count_tokens` endpoint passes `body.content` verbatim instead of wrapping it in the `## Document Index … ## User Question` template, keeping the estimate aligned with the actual API call.
+- **Manual compaction endpoint clarified** — `POST /api/sessions/{id}/compact` now documents that it runs the compactor but **does not persist the result**. Response body includes `persisted: false` and a note explaining this is a health-check/preview only — real compaction happens automatically during runs.
+- **FTS5 safety extended for legal queries** — `_fts5_safe` in [backend/store/sessions.py](backend/store/sessions.py) now tokenises on `[\w.\-/§()]+` (preserving dots, hyphens, slashes, and section signs) so queries like `"U.S.C. § 12"` or `"Section 12(3)(a)"` survive tokenisation as meaningful phrases. Purely-punctuation tokens are stripped post-split.
+- **`PRAGMA foreign_keys=ON` moved to per-connection setup** — SQLite FK enforcement is a per-connection setting. The pragma was moved out of the DDL block (which only runs once) into `_init_db` before the `_db_initialised` guard so every connection enables it. Previously, all connections after the first ran with FK enforcement silently disabled, breaking `ON DELETE CASCADE`.
+- **Professional audience sentence-length range widened** — `_AUDIENCE_INSTRUCTIONS["professional"]` sentence-length guidance updated from `15–30 words` to `20–40 words` for a more natural register.
+- **`runArtifactIds` race condition fixed** — functional state updates now used when accumulating artifact IDs during a run, preventing flickering artifact cards caused by stale closure captures.
+
+### Fixed
+
+- **Document chunker page numbers** — `chunk_by_pages` was iterating `pages` at stride 2 starting from index 0, misreading the structure returned by `re.split` with a capturing group (which places the captured page number at odd indices). Rewritten to correctly consume `(page_num_str, page_body)` pairs starting at index 1, so chunk metadata reflects actual page numbers from the document.
+- **Document loader error messages** — error messages for missing PDF/DOCX parsers now reference `requirements.txt` for installation instead of bare `pip install` commands.
+
+### Schema changes
+
+- `last_run_state` gains a fourth value: `"cancelled"` (alongside `idle | running | completed | error`). Existing rows are unaffected (they hold one of the prior three values).
+- `TokenCountRequest` gains an optional `attached_document_ids: list[str]` field.
+
+---
+
 ## [2.2.0] — 2026-04-26: UAT-driven fix release
 
 This release closes every issue logged in the [25 April 2025 UAT pass](UAT/25April_UAT%20Checklist.md) plus the free-form observations. Detailed root-cause analysis and per-fix verification are in [UAT/25April_UAT_Resolution_Plan.md](UAT/25April_UAT_Resolution_Plan.md).

@@ -30,9 +30,9 @@ from backend.store.sessions import (
 class DocumentStore:
     """Ingest a file, chunk it, and persist chunks to SQLite with FTS5."""
 
-    def __init__(self, chunk_size: int = 8000):
+    def __init__(self, chunk_tokens: int = 4000):
         self._loader = DocumentLoader()
-        self._chunker = DocumentChunker(max_chunk_size=chunk_size)
+        self._chunker = DocumentChunker(max_chunk_tokens=chunk_tokens)
 
     async def ingest(
         self,

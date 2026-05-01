@@ -13,6 +13,7 @@ The Lead has access to these tools:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from backend.store.sessions import (
@@ -22,6 +23,39 @@ from backend.store.sessions import (
     lookup_definition,
     create_artifact,
 )
+
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+    re.IGNORECASE,
+)
+_CITATION_BLOCK_RE = re.compile(
+    r"\[(?=[^\]\n]*[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})[^\]\n]*\]",
+    re.IGNORECASE,
+)
+
+
+def normalize_chunk_citation_syntax(text: str) -> str:
+    """Canonicalize citation blocks to `[uuid, uuid]`.
+
+    Accepts loose forms like `[chunk: <uuid>]` and rewrites them to the strict
+    format consumed by frontend citation renderers.
+    """
+    if not text:
+        return text
+
+    def _rewrite(match: re.Match[str]) -> str:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for found in _UUID_RE.findall(match.group(0)):
+            normalized = found.lower()
+            if normalized not in seen:
+                seen.add(normalized)
+                ordered.append(normalized)
+        if not ordered:
+            return match.group(0)
+        return "[" + ", ".join(ordered) + "]"
+
+    return _CITATION_BLOCK_RE.sub(_rewrite, text)
 
 # ─── Tool schemas (sent to Claude) ───────────────────────────────────────────
 
@@ -261,10 +295,11 @@ async def handle_tool(
         _ALLOWED_MIMES = {"text/plain", "text/markdown", "text/html", "text/csv"}
         raw_mime = tool_input.get("mime_type", "text/plain")
         mime_type = raw_mime if raw_mime in _ALLOWED_MIMES else "text/plain"
+        content = normalize_chunk_citation_syntax(tool_input["content"])
         aid = await create_artifact(
             session_id=session_id,
             name=tool_input["name"],
-            content=tool_input["content"],
+            content=content,
             mime_type=mime_type,
             citations=tool_input.get("citations"),
         )

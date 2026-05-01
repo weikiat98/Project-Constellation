@@ -4,38 +4,59 @@
 
 import type { Artifact } from "./api";
 
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-export const CITATION_RE = new RegExp(`\\[(${UUID}(?:\\s*[,;]\\s*${UUID})*)\\]`, "g");
-export const UUID_RE = new RegExp(UUID, "g");
+const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+// Any [...] span that contains at least one UUID. This intentionally accepts
+// variants like `[chunk: <uuid>]` or `[source=<uuid>; ...]`, not only `[uuid]`.
+export const CITATION_RE = new RegExp(`\\[(?=[^\\]\\n]*${UUID})[^\\]\\n]*\\]`, "gi");
+export const UUID_RE = new RegExp(UUID, "gi");
 
 type ChunkMeta = { page?: number | null; section_id?: string | null; filename?: string | null } | null;
+
+export function normalizeChunkId(id: string): string {
+  return id.trim().toLowerCase();
+}
+
+export function extractCitationIds(text: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  UUID_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = UUID_RE.exec(text)) !== null) {
+    const normalized = normalizeChunkId(m[0]);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      ids.push(normalized);
+    }
+  }
+  return ids;
+}
 
 function shortenFilename(name: string, max = 40): string {
   const base = name.replace(/\.[^.]+$/, "").trim();
   if (base.length <= max) return base;
-  return base.slice(0, max - 1).trimEnd() + "…";
+  return base.slice(0, max - 1).trimEnd() + "\u2026";
 }
 
 function labelFor(meta: ChunkMeta, fallbackId: string): string {
-  if (!meta) return fallbackId.slice(0, 6);
+  if (!meta) return `source ${fallbackId.slice(0, 4)}`;
   const fname = meta.filename ? shortenFilename(meta.filename) : null;
-  if (fname && meta.page) return `${fname} p.${meta.page}`;
-  if (fname && meta.section_id) return `${fname} §${meta.section_id}`;
+  if (fname && typeof meta.page === "number") return `${fname} p.${meta.page}`;
+  if (fname && meta.section_id) return `${fname} \u00A7${meta.section_id}`;
   if (fname) return fname;
-  if (meta.page) return `p.${meta.page}`;
-  if (meta.section_id) return `§${meta.section_id}`;
-  return fallbackId.slice(0, 6);
+  if (typeof meta.page === "number") return `p.${meta.page}`;
+  if (meta.section_id) return `\u00A7${meta.section_id}`;
+  return `source ${fallbackId.slice(0, 4)}`;
 }
 
 export async function resolveCitations(text: string): Promise<string> {
-  const ids = Array.from(new Set(text.match(UUID_RE) ?? []));
+  const ids = Array.from(new Set(extractCitationIds(text)));
   if (ids.length === 0) return text;
 
   const metas = new Map<string, ChunkMeta>();
   await Promise.all(
     ids.map(async (id) => {
       try {
-        const r = await fetch(`/api/chunks/${id}`);
+        const r = await fetch(`/api/chunks/${normalizeChunkId(id)}`);
         metas.set(id, r.ok ? await r.json() : null);
       } catch {
         metas.set(id, null);
@@ -43,10 +64,11 @@ export async function resolveCitations(text: string): Promise<string> {
     })
   );
 
-  return text.replace(CITATION_RE, (_full, group: string) => {
-    const inner = (group.match(UUID_RE) ?? [])
-      .map((id) => labelFor(metas.get(id) ?? null, id))
+  return text.replace(CITATION_RE, (full) => {
+    const inner = extractCitationIds(full)
+      .map((normalized) => labelFor(metas.get(normalized) ?? null, normalized))
       .join(", ");
+    if (!inner) return full;
     return `[${inner}]`;
   });
 }

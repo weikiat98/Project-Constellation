@@ -25,7 +25,7 @@ from backend.orchestrator.event_bus import SessionEventBus
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
-_CITATION_RE = re.compile(r'\[[0-9a-f\-]{36}\]')
+_CITATION_RE = re.compile(r'\[[0-9a-fA-F\-]{36}\]')
 
 _SUBAGENT_TOOLS = [
     {
@@ -105,9 +105,11 @@ async def run_subagent(
     Returns: {agent_id, result_text, citations_present, tokens_in, tokens_out}
     """
     agent_id = str(uuid.uuid4())
-    run_id = await create_agent_run(session_id, role[:100], parent_agent_id)
+    # Extract first sentence only for display (split on '. ')
+    role_display = role.split(". ")[0] if ". " in role else role
+    run_id = await create_agent_run(session_id, role_display, parent_agent_id)
 
-    bus.publish("agent_spawned", agent_id=agent_id, role=role[:120], parent=parent_agent_id or "lead")
+    bus.publish("agent_spawned", agent_id=agent_id, role=role_display, parent=parent_agent_id or "lead")
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 

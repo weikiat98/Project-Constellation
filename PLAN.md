@@ -1,8 +1,10 @@
 # Constellation — Full-Stack Plan
 
+> **Historical design document.** This plan was written before the 2.0 rewrite. Phase A is fully implemented and shipped (v2.0–v2.3). Phase B remains the forward roadmap. References to files removed in 2.0 (`librarian_agents_team.py`, `advanced_examples.py`, `test_example.py`) are preserved for historical context only.
+
 ## Context
 
-The repo currently contains a CLI-only, synchronous Python prototype ([librarian_agents_team.py](librarian_agents_team.py)) that orchestrates a Lead agent and three hardcoded SubAgents against Anthropic's Messages API. The goal is to evolve this into **Constellation**, a multi-agent document analysis assistant for lengthy, high-stakes documents — academic research papers, public policies, regulations, legal Acts, and compliance frameworks.
+The repo originally contained a CLI-only, synchronous Python prototype (`librarian_agents_team.py`, removed in 2.0) that orchestrated a Lead agent and three hardcoded SubAgents against Anthropic's Messages API. The goal was to evolve this into **Constellation**, a multi-agent document analysis assistant for lengthy, high-stakes documents — academic research papers, public policies, regulations, legal Acts, and compliance frameworks. That evolution is now complete.
 
 ### Who this is for and what they need
 
@@ -198,13 +200,15 @@ Three-pane layout:
 
 ## Migration of existing code
 
-| Existing file | Action |
-|---|---|
-| [document_loader.py](document_loader.py) | **Keep**, import from backend |
-| [document_chunker.py](document_chunker.py) | **Keep**, import from backend |
-| [librarian_agents_team.py](librarian_agents_team.py) | **Replace** with async orchestrator; keep as reference |
-| [cli.py](cli.py) | **Keep**, repoint to new async orchestrator |
-| [advanced_examples.py](advanced_examples.py), [test_example.py](test_example.py) | Repurpose as integration tests against the new backend |
+> All actions below have been completed as of v2.0.
+
+| Existing file | Action | Status |
+| --- | --- | --- |
+| [document_loader.py](document_loader.py) | **Keep**, import from backend | Done — at repo root, imported by `backend/store/documents.py` |
+| [document_chunker.py](document_chunker.py) | **Keep**, import from backend | Done — at repo root, imported by `backend/store/documents.py` |
+| `librarian_agents_team.py` | **Replaced** with async orchestrator | Removed in 2.0 |
+| [cli.py](cli.py) | **Keep**, repoint to new async orchestrator | Done — drives `run_lead` directly |
+| `advanced_examples.py`, `test_example.py` | Repurpose as integration tests | Removed in 2.0 (no replacement yet — see §14 of technical_docs.md) |
 
 ---
 

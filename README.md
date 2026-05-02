@@ -109,7 +109,7 @@ Detailed root-cause analysis and per-issue verification: [UAT/25April_UAT_Resolu
 └──────────────────────────────▲─────────────────────────────┘
                                │  HTTPS + SSE (direct to :8000)
 ┌──────────────────────────────▼─────────────────────────────┐
-│  Backend  (FastAPI + async uvicorn, v1.0.0)                │
+│  Backend  (FastAPI + async uvicorn, v1.2.0)                │
 │  - REST: /sessions, /documents, /messages, /artifacts      │
 │  - SSE: /sessions/{id}/stream                              │
 │  - Persisted trace: /sessions/{id}/trace                   │
@@ -136,7 +136,7 @@ The system uses two Claude models deliberately for a cost/quality tradeoff:
 
 | Role | Default model | Rationale |
 | --- | --- | --- |
-| Lead Orchestrator (`lead.py`) | `claude-haiku-4-5-20251001` *(dev default)* / `claude-opus-4-6` *(production)* | Reasoning, tool-use orchestration, synthesis. Swap to Opus for production-grade answers. |
+| Lead Orchestrator (`lead.py`) | `claude-sonnet-4-6` *(dev default)* / `claude-opus-4-6` *(production)* | Reasoning, tool-use orchestration, synthesis. Sonnet is the development default as of 2.3; swap to Opus for production-grade answers. |
 | SubAgents (`subagent.py`) | `claude-haiku-4-5-20251001` | Fast and cheap; each subagent does a narrow, citation-bounded task. |
 | Compactor (`compactor.py`) | `claude-haiku-4-5-20251001` | Context summarisation — no complex reasoning needed. |
 
@@ -215,7 +215,7 @@ constellation/
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | Yes | — | Your Anthropic API key. Get one at [console.anthropic.com](https://console.anthropic.com). |
-| `ANTHROPIC_MODEL` | No | `claude-haiku-4-5-20251001` | Overrides the model used by Lead, SubAgent, and Compactor. For production Lead quality, set to `claude-opus-4-6` (or leave the value in `lead.py` and keep Haiku for the other two). |
+| `ANTHROPIC_MODEL` | No | `claude-sonnet-4-6` | Overrides the model used by Lead, SubAgent, and Compactor. For production Lead quality, set to `claude-opus-4-6` (or leave the value in `lead.py` and keep Haiku for the other two). |
 | `NEXT_PUBLIC_SSE_BASE` | No | `http://<host>:8000` | Base URL the browser uses to connect to the SSE stream. Useful when the backend runs on a non-default host/port. |
 | `ADVISOR_MODEL` | No | *(empty — disabled)* | Enables the Advisor tool on the Lead executor. Set to `claude-opus-4-7` to let the Lead consult a stronger model up to 3 times per run. Leave unset for strict cost control. |
 
@@ -223,6 +223,12 @@ Example — run everything on Haiku to minimise cost (lower Lead quality):
 
 ```bash
 export ANTHROPIC_MODEL=claude-haiku-4-5-20251001
+```
+
+Example — upgrade the Lead to Opus for production quality:
+
+```bash
+export ANTHROPIC_MODEL=claude-opus-4-6
 ```
 
 ---
@@ -273,7 +279,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-> The terminal prints `constellation@2.2.0 dev` — that's the package name and version from [frontend/package.json](frontend/package.json), not a warning.
+> The terminal prints `constellation@2.3.0 dev` — that's the package name and version from [frontend/package.json](frontend/package.json), not a warning.
 
 ### 5. Stop the servers
 
@@ -295,7 +301,7 @@ Drag a PDF / DOCX / TXT / MD / HTML onto the home screen, or click the **+** but
 
 Behind the scenes the upload triggers:
 
-- File load + intelligent chunking (~8000 chars/chunk).
+- File load + intelligent chunking (~4000 tokens/chunk).
 - Chunks stored in SQLite with an FTS5 full-text index.
 - Definition and cross-reference extraction run as background tasks.
 
@@ -316,7 +322,7 @@ Type your question and hit Enter (or click the send button). The app navigates t
 1. The Lead receives your question plus a 50-chunk index of the document.
 2. It uses `search_document` / `read_document_chunk` to explore structure.
 3. It spawns 2–5 subagents in parallel via `spawn_subagent` — each gets only the chunk IDs it needs.
-4. Subagents run concurrently (`asyncio.gather`). Every result must carry `[chunk_id]` citations; uncited output is flagged.
+4. Subagents run concurrently (`asyncio.gather`). Every result is validated on two axes: presence (at least one `[chunk_id]` token exists) and validity (every cited UUID resolves to a real chunk in the database). Results that fail either check are flagged and the Lead is instructed to re-spawn rather than synthesize from them.
 5. The Lead synthesises, optionally calls `write_artifact`, and ends with `finalize`.
 
 ### Step 4 — Verify claims
@@ -327,8 +333,10 @@ Click any inline `[chunk_id]` citation — a **Source Drawer** slides in with th
 
 - **Retry** an assistant reply — truncates history at that point and re-runs.
 - **Edit** a user message — truncates, rewrites, re-runs.
+- **Cancel** a running answer — `POST /api/sessions/{id}/cancel` stops the in-flight run at its next iteration; the SSE stream closes cleanly and `last_run_state` transitions to `cancelled`.
 - **Rename** the session via the pencil icon in the header.
 - **Pin** sessions from the sidebar.
+- **Delete documents** — trash icon in the Session files popover removes an uploaded document (refused with 409 if the document is referenced by a persisted message).
 - **Compact** long sessions manually, or let it fire automatically at 85% of the 200K window.
 
 ---

@@ -50,7 +50,7 @@ Constellation is a three-tier application:
 
 1. **Frontend** — Next.js 15 App Router + React 19 + Tailwind. Single-page experience across Splash (`/`), Home (`/home`), and Session (`/sessions/[id]`).
 2. **Backend** — FastAPI running on `uvicorn`, exposing REST + Server-Sent Events (SSE). All I/O is async; SQLite access goes through `aiosqlite`.
-3. **Agent orchestration** — an async orchestrator-workers pattern built on the Anthropic SDK. A Lead agent (typically Opus) plans, calls tools, and spawns SubAgents (Haiku) that run in parallel via `asyncio.gather`.
+3. **Agent orchestration** — an async orchestrator-workers pattern built on the Anthropic SDK. A Lead agent (Sonnet by default, Opus for production) plans, calls tools, and spawns SubAgents (Haiku) that run in parallel via `asyncio.gather`.
 
 All persistent state lives in a single SQLite file (`deep_reading.db`) using WAL mode. An FTS5 virtual table backs keyword search. No external services are required beyond the Anthropic API.
 
@@ -194,10 +194,17 @@ All schemas are the JSON Schemas sent to Claude in `LEAD_TOOLS`. See [backend/or
 
 ### 3.4 Citation enforcement
 
-- Subagent output is scanned with the regex `\[[0-9a-f\-]{36}\]` ([backend/orchestrator/subagent.py:28](backend/orchestrator/subagent.py#L28)).
-- If no UUID-shaped citation appears, `citations_present: false` is set on the return value.
-- The Lead receives this flag as part of the `tool_result` content, plus a warning note. The Lead's system prompt tells it to re-spawn uncited tasks rather than trust them.
-- The Lead itself is held to the same contract in its system prompt; `finalize.result` is expected to carry `[chunk_id]` citations on every factual claim.
+Two checks are applied to every subagent result before it is returned to the Lead:
+
+**Check 1 — Presence** ([backend/orchestrator/subagent.py](backend/orchestrator/subagent.py)): the result text is scanned with `_CITATION_RE = re.compile(r'\[[0-9a-fA-F\-]{36}\]')`. If no UUID-shaped token is found, `citations_present: false` is set.
+
+**Check 2 — Validity** ([backend/orchestrator/subagent.py](backend/orchestrator/subagent.py)): every UUID extracted by the regex is looked up in the database via `get_chunk`. Any UUID that returns `None` is a hallucinated chunk ID — one the model invented rather than drew from the index it was given. `citations_valid: false` is set and the offending IDs are collected in `invalid_citation_ids`.
+
+Both flags and the list of invalid IDs are forwarded to the Lead inside the `tool_result` content block, along with a plain-English `note` field. The Lead's system prompt instructs it not to synthesize from a result where either flag is false, and to re-spawn the task instead.
+
+**Vocabulary restriction**: the subagent system prompt explicitly lists the valid chunk IDs it was given for the task under a `VALID CHUNK IDs FOR THIS TASK` heading and instructs the model to cite only from that list. This reduces the surface area for hallucination to UUIDs the model can actually see, and makes any out-of-vocabulary citation immediately catchable by Check 2.
+
+The Lead itself is held to the same citation contract in its system prompt; `finalize.result` is expected to carry `[chunk_id]` citations on every factual claim.
 
 ### 3.5 Compaction
 
@@ -356,7 +363,7 @@ Schema changes are idempotent because every DDL is `CREATE TABLE IF NOT EXISTS` 
 Entry point: `DocumentStore.ingest(session_id, file_path, original_filename?)` in [backend/store/documents.py](backend/store/documents.py).
 
 1. **Load** — `DocumentLoader.load_document(path)` in [document_loader.py](document_loader.py) dispatches by extension (PDF via PyPDF2, DOCX via python-docx, TXT / MD / HTML via built-ins).
-2. **Chunk** — `DocumentChunker.smart_chunk(content, max_chunk_size=8000)` in [document_chunker.py](document_chunker.py) detects page / chapter / section structure and emits semantic chunks with metadata.
+2. **Chunk** — `DocumentChunker(max_chunk_tokens=4000)` in [document_chunker.py](document_chunker.py) detects page / chapter / section structure and emits semantic chunks with metadata (default 4,000 tokens ≈ 16,000 chars).
 3. **Create document** — inserts a row with the user-facing `original_filename`. Display names always flow through so the UI never surfaces the OS temp path.
 4. **Insert chunks** — each chunk becomes a row in `chunks`; FTS5 triggers index it automatically. `section_id` and `page` are derived from the chunker's metadata when available.
 5. **Kick off extractors** — the REST handler schedules `extract_definitions` and `extract_cross_refs` as background `asyncio.Task`s so the HTTP response can return immediately.
@@ -476,12 +483,12 @@ Outputs use stdout for the answer and stderr for progress so `python cli.py ... 
 | Knob | Where | Default | Notes |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | env | — | Required. |
-| `ANTHROPIC_MODEL` | env | `claude-haiku-4-5-20251001` | Overrides Lead, SubAgent, and Compactor models. |
+| `ANTHROPIC_MODEL` | env | `claude-sonnet-4-6` | Overrides Lead, SubAgent, and Compactor models. |
 | `ADVISOR_MODEL` | env | `""` *(disabled)* | Enables the Lead's Advisor tool (`advisor_20260301` beta). Set to a model ID (e.g. `claude-opus-4-7`) that is ≥ the executor in capability. Leave empty to disable. |
 | `NEXT_PUBLIC_SSE_BASE` | env (frontend) | `http://<host>:8000` | SSE base URL. |
 | Context window | `compactor.WINDOW` | 200,000 | Set to match the deployed model's window. |
 | Compaction threshold | `compactor.COMPACT_THRESHOLD` | 0.85 | Fraction of window that triggers compaction. |
-| Chunk size | `DocumentStore(chunk_size=8000)` | 8,000 chars | Tune for the document style. |
+| Chunk size | `DocumentStore(chunk_tokens=4000)` | 4,000 tokens | Tune for the document style. |
 | Lead iteration cap | `lead.py` loop | 40 | Safety limit. |
 | SubAgent iteration cap | `subagent.py` loop | 20 | Safety limit. |
 | Lead max_tokens | `lead.py` | 64,000 | Per call. |

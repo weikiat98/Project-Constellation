@@ -6,9 +6,16 @@ Each subagent is a fresh async Messages call with:
   - Only the chunk IDs it needs as context
   - Its own tool set (read_document_chunk only)
 
-Citation enforcement: the Lead's tool handler validates that every subagent
-result contains at least one [chunk_id] citation; if not, it logs a warning
-and the Lead can choose to respawn.
+Citation enforcement: two checks are applied to every subagent result before
+it is returned to the Lead:
+  1. Presence check  — at least one [chunk_id] token exists (regex).
+  2. Validity check  — every cited UUID is looked up in the DB; any UUID that
+     does not exist is treated as a hallucination and sets citations_valid=False.
+Both flags are surfaced to the Lead so it can decide to re-spawn the task.
+
+Vocabulary restriction: the subagent system prompt explicitly lists the valid
+chunk IDs it was given and instructs the model to only cite from that list,
+reducing the opportunity for the model to invent plausible-looking UUIDs.
 """
 
 from __future__ import annotations
@@ -42,7 +49,7 @@ _SUBAGENT_TOOLS = [
 ]
 
 
-def _make_system_prompt(role: str, audience: str) -> str:
+def _make_system_prompt(role: str, audience: str, valid_chunk_ids: list[str]) -> str:
     audience_instruction = {
         "layperson": (
             "TARGET READER: A non-expert with no background in this domain.\n"
@@ -74,6 +81,8 @@ def _make_system_prompt(role: str, audience: str) -> str:
         ),
     }.get(audience, "Use domain-appropriate terminology.")
 
+    valid_ids_block = "\n".join(f"  - {cid}" for cid in valid_chunk_ids)
+
     return f"""You are a specialised document analysis subagent.
 
 ROLE: {role}
@@ -85,6 +94,9 @@ Every factual claim you make MUST include a citation in the form [chunk_id] wher
 chunk_id is the UUID of the chunk it came from. Example:
   "The penalty for non-compliance is $50,000 [3f8a1b2c-...]."
 Claims without citations will be rejected.
+
+VALID CHUNK IDs FOR THIS TASK (cite ONLY from this list — do not invent or infer chunk IDs):
+{valid_ids_block}
 
 Use the read_document_chunk tool to fetch any chunk you need.
 Be thorough, precise, and cite every claim."""
@@ -136,7 +148,7 @@ async def run_subagent(
     tokens_in = tokens_out = 0
     result_text = ""
 
-    system_prompt = _make_system_prompt(role, audience)
+    system_prompt = _make_system_prompt(role, audience, chunk_ids)
 
     # Agentic loop
     for _iteration in range(20):  # safety limit
@@ -209,7 +221,19 @@ async def run_subagent(
         else:
             break
 
+    # ── Citation validation ───────────────────────────────────────────────
+    # Check 1: presence — at least one UUID-shaped token exists.
     citations_present = bool(_CITATION_RE.search(result_text))
+
+    # Check 2: validity — every cited UUID must exist in the database.
+    # A UUID that passes the regex but returns None from get_chunk is a
+    # hallucination (the model invented or misremembered a chunk ID).
+    cited_ids = [m[1:-1] for m in _CITATION_RE.findall(result_text)]  # strip [ ]
+    invalid_ids: list[str] = []
+    for cid in cited_ids:
+        if await get_chunk(cid) is None:
+            invalid_ids.append(cid)
+    citations_valid = len(invalid_ids) == 0
 
     # Send up to 2KB of subagent output. The trace UI lets the user expand
     # this on click; truncating at 200 was hiding nearly all of the actual
@@ -223,6 +247,8 @@ async def run_subagent(
         "agent_id": agent_id,
         "result_text": result_text,
         "citations_present": citations_present,
+        "citations_valid": citations_valid,
+        "invalid_citation_ids": invalid_ids,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
     }

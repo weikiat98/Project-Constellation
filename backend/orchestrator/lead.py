@@ -5,8 +5,12 @@ The Lead runs an agentic tool-use loop.  When it calls spawn_subagent,
 all spawns are gathered in parallel via asyncio.gather.  The Lead then
 synthesizes the results and either calls finalize or continues with more tools.
 
-Citation enforcement: subagent results missing [chunk_id] citations are flagged
-and the Lead is informed so it can respawn or adjust.
+Citation enforcement: two checks are applied to every subagent result:
+  1. Presence  — at least one [chunk_id] token exists (citations_present).
+  2. Validity  — every cited UUID resolves to a real DB chunk (citations_valid).
+     UUIDs that fail the DB lookup are listed in invalid_citation_ids.
+Both flags are forwarded to the Lead as part of the tool_result content so it
+can decide to re-spawn the task rather than synthesize from bad citations.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import anthropic
 
@@ -147,7 +151,11 @@ Apply formatting for both document-based answers and plain text message response
 
 ## Citation rule
 When documents are uploaded, every factual claim drawn from them MUST include a
-[chunk_id] citation. Reject any subagent output that lacks citations — re-spawn the task.
+[chunk_id] citation. Each subagent result carries two citation flags:
+- `citations_present`: false means no [chunk_id] token was found at all — re-spawn the task.
+- `citations_valid`: false means one or more cited UUIDs do not exist in the database
+  (hallucinated IDs); the invalid IDs are listed in the `note` field — re-spawn the task.
+Do not synthesize from a result where either flag is false.
 When no documents are uploaded, citations are not required — answer from your knowledge.
 
 ## Context window
@@ -660,13 +668,26 @@ async def run_lead(
                 if isinstance(result, Exception):
                     result_content = json.dumps({"error": str(result)})
                 else:
-                    subagent_results.append(result)
-                    citation_note = "" if result["citations_present"] else " [WARNING: no citations found]"
+                    r = cast(dict[str, Any], result)  # narrow away BaseException for type checker
+                    subagent_results.append(r)
+                    # Build a single note that covers both failure modes so the
+                    # Lead receives a clear, actionable signal for re-spawning.
+                    notes: list[str] = []
+                    if not r["citations_present"]:
+                        notes.append("WARNING: no citations found — re-spawn this task")
+                    if not r["citations_valid"]:
+                        bad = ", ".join(r["invalid_citation_ids"])
+                        notes.append(
+                            f"WARNING: {len(r['invalid_citation_ids'])} hallucinated "
+                            f"chunk ID(s) detected ({bad}) — these UUIDs do not exist in "
+                            "the database; do not trust this result, re-spawn the task"
+                        )
                     result_content = json.dumps({
-                        "agent_id": result["agent_id"],
-                        "result": result["result_text"],
-                        "citations_present": result["citations_present"],
-                        "note": citation_note,
+                        "agent_id": r["agent_id"],
+                        "result": r["result_text"],
+                        "citations_present": r["citations_present"],
+                        "citations_valid": r["citations_valid"],
+                        "note": " | ".join(notes) if notes else "",
                     })
 
                 other_tool_results.append({

@@ -1,8 +1,19 @@
 # Changelog
+<!-- markdownlint-disable MD024 -->
 
 All notable changes to Constellation are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Pre-2.0 entries are reconstructed retroactively from git history and therefore list the significant changes per era rather than a per-commit log.
+
+---
+
+## [2.3.1] — 2026-05-02: Citation hallucination hardening
+
+### Changed
+
+- **Subagent citation validity check** — `run_subagent` in [backend/orchestrator/subagent.py](backend/orchestrator/subagent.py) now performs a second citation check after the existing presence check. Every UUID extracted from the result text is looked up in the database via `get_chunk`; any UUID that returns `None` is a hallucinated chunk ID. `citations_valid: false` and the list of offending IDs (`invalid_citation_ids`) are returned alongside the existing `citations_present` flag.
+- **Citation vocabulary restriction in subagent prompt** — `_make_system_prompt` now accepts the `valid_chunk_ids` list and embeds it in the system prompt under a `VALID CHUNK IDs FOR THIS TASK` heading, explicitly instructing the model to cite only from that list and not to invent or infer chunk IDs. This reduces hallucination opportunity to UUIDs the model can actually see.
+- **Two-flag enforcement in Lead** — the subagent result handler in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) now reads both `citations_present` and `citations_valid`. If either is false, a detailed warning note (including the specific invalid UUIDs) is injected into the `tool_result` content block. The Lead system prompt was updated to instruct re-spawning when either flag is false, not just when citations are absent.
 
 ---
 

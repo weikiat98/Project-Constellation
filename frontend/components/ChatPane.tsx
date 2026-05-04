@@ -48,7 +48,14 @@ function sanitizeStreamingMarkdown(text: string): string {
   if (!text) return text;
   let out = text;
 
-  // 1. Unterminated fenced code block (```…). If the count of ``` lines is
+  // 1. Unterminated link / image syntax appearing *before* any unclosed code
+  //    fence: `[text](http…` without a closing paren leaks bracket+paren as
+  //    visible characters. Patch this first so the early-return on an odd
+  //    fence count below doesn't strand a half-written link in the prose.
+  const openLinkParen = /\]\([^)\s]*$/.test(out);
+  if (openLinkParen) out += ")";
+
+  // 2. Unterminated fenced code block (```…). If the count of ``` lines is
   //    odd, append a closing fence on its own line.
   const fenceMatches = out.match(/^```/gm);
   if (fenceMatches && fenceMatches.length % 2 === 1) {
@@ -58,14 +65,14 @@ function sanitizeStreamingMarkdown(text: string): string {
     return out;
   }
 
-  // 2. Unterminated inline code (single backtick). Count backticks on the
+  // 3. Unterminated inline code (single backtick). Count backticks on the
   //    final line; if odd, close it.
   const lastNl = out.lastIndexOf("\n");
   const tail = lastNl === -1 ? out : out.slice(lastNl + 1);
   const inlineTicks = (tail.match(/`/g) || []).length;
   if (inlineTicks % 2 === 1) out += "`";
 
-  // 3. Unterminated bold (**) and italic (*). Count occurrences and pad if
+  // 4. Unterminated bold (**) and italic (*). Count occurrences and pad if
   //    odd. Bold is checked first since ** is a superset of *.
   const bold = (out.match(/\*\*/g) || []).length;
   if (bold % 2 === 1) out += "**";
@@ -74,13 +81,6 @@ function sanitizeStreamingMarkdown(text: string): string {
   const sansBold = out.replace(/\*\*/g, "");
   const italic = (sansBold.match(/\*/g) || []).length;
   if (italic % 2 === 1) out += "*";
-
-  // 4. Unterminated link / image syntax: `[text](http…` without a closing
-  //    paren. ReactMarkdown otherwise leaves the bracket+paren visible until
-  //    the URL is complete. Detect a final unclosed `(` after a `]` and
-  //    suppress rendering by closing the paren with a placeholder fragment.
-  const openLinkParen = /\]\([^)\s]*$/.test(out);
-  if (openLinkParen) out += ")";
 
   return out;
 }
@@ -255,8 +255,6 @@ interface Props {
   onRetry?: (assistantMessageId: string) => void;
   onEdit?: (userMessageId: string, newContent: string) => void;
   onDropFile?: (files: FileList) => void;
-  // Called once when final_message is received and text is fully displayed.
-  onTypewriterComplete?: () => void;
 
   // Context meter
   liveContextPercent?: number;
@@ -333,10 +331,6 @@ export default function ChatPane({
   const plusRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
-  // No typewriter: text arrives via real text_delta events; commit is handled
-  // by the session page on run_complete. The onTypewriterComplete prop is kept
-  // as a safety shim but does not need to be triggered from here.
-
   // Debounced token-count fetch: recomputes ~400ms after the user stops typing,
   // also refreshes when the document set changes (new upload → larger base).
   // Skipped during streaming to avoid spamming the endpoint mid-run.
@@ -369,10 +363,16 @@ export default function ChatPane({
 
   // Auto-scroll only when the user is pinned to the bottom. New token bursts
   // therefore don't yank a user who has scrolled up to inspect a citation.
+  // Use "auto" (instant) scroll while streaming — smooth-scroll requests stack
+  // on every paced character update (~60Hz) and fight each other, producing
+  // janky scroll on Chromium. Reserve "smooth" for committed message changes
+  // and the initial pin, where the scroll happens infrequently.
   useEffect(() => {
     if (!userPinnedToBottom) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, userPinnedToBottom]);
+    bottomRef.current?.scrollIntoView({
+      behavior: isStreaming ? "auto" : "smooth",
+    });
+  }, [messages, streamingText, userPinnedToBottom, isStreaming]);
 
   function jumpToBottom() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

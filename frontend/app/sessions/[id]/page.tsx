@@ -179,7 +179,6 @@ export default function SessionPage() {
   // search-param-only rerenders (e.g. router.replace stripping ?prompt) from
   // clobbering a freshly selected audience with stale persisted state.
   const didHydrateAudienceForSession = useRef<string | null>(null);
-  const pendingCommitRef = useRef<(() => void) | null>(null);
   // Audience ref keeps the mount effect's closure free of `audience` as a
   // dependency, so manual toggles don't re-fire the effect (and trigger
   // extra getSession round-trips). The mount handoff reads the latest
@@ -217,6 +216,10 @@ export default function SessionPage() {
     const TEXT_CHARS_PER_SEC = 95;
     const FINAL_TEXT_CHARS_PER_SEC = 110;
     const THINKING_CHARS_PER_SEC = 90;
+    // Per-frame cap above the soft-catchup cap so steady-state pacing is
+    // unaffected (typical step at 60fps is ~2 chars), but catch-up bursts
+    // after a tab returns from background are bounded so the bubble doesn't
+    // dump hundreds of chars in one paint.
     const TEXT_MAX_CHARS_PER_FRAME = 12;
     const THINKING_MAX_CHARS_PER_FRAME = 16;
     const SOFT_CATCHUP_THRESHOLD = 3000;
@@ -226,6 +229,21 @@ export default function SessionPage() {
     let pacingRafId: number | null = null;
     let lastPaceTs = 0;
     let sawFinalMessage = false;
+    // Tracks the run_complete commit-poll interval so navigation/unmount can
+    // clear it. Without this, navigating away mid-pacing leaves the interval
+    // ticking and calling setState on an unmounted component (memory leak +
+    // React warnings).
+    let commitPollId: number | null = null;
+    // True once `run_complete` has begun its commit path (immediate or via the
+    // pacing-done poll). The SSE `onClose` callback uses this to skip its
+    // refetch — otherwise the close fires right after run_complete and races
+    // the in-flight commit, potentially clobbering fresh state.
+    let commitStarted = false;
+    // Set when this attachStream invocation is being torn down (retry, edit,
+    // navigation). cancelAnimationFrame can race with an in-flight tick that's
+    // already past the cancellation checkpoint — the flag lets tick() bail
+    // before calling setState from this stale closure into a fresh stream.
+    let cancelled = false;
 
     const advance = (
       displayed: string,
@@ -248,6 +266,11 @@ export default function SessionPage() {
 
     const tick = (ts: number) => {
       pacingRafId = null;
+      // Stale-closure guard: if this attachStream invocation was cancelled
+      // (retry/edit/navigation) between the RAF being scheduled and tick()
+      // actually firing, skip — otherwise we'd setState from the old closure
+      // into the new stream's bubble and flash stale text.
+      if (cancelled) return;
       if (!lastPaceTs) lastPaceTs = ts;
       const dtMs = Math.min(64, Math.max(8, ts - lastPaceTs));
       lastPaceTs = ts;
@@ -308,6 +331,10 @@ export default function SessionPage() {
         window.cancelAnimationFrame(pacingRafId);
         pacingRafId = null;
       }
+      if (commitPollId !== null) {
+        window.clearInterval(commitPollId);
+        commitPollId = null;
+      }
       lastPaceTs = 0;
     };
 
@@ -349,8 +376,18 @@ export default function SessionPage() {
             // tail. run_complete (below) is the hard flush point.
             sawFinalMessage = true;
             accumulatedText = event.content;
+            // If the authoritative content is shorter than what's already on
+            // screen, trim the displayed prefix to its longest agreement with
+            // the new buffer instead of snapping all the way back. Avoids the
+            // jarring "text deletes itself" effect when the server emits a
+            // corrected/trimmed final message.
             if (displayedText.length > accumulatedText.length) {
-              displayedText = accumulatedText;
+              let agree = 0;
+              const maxAgree = Math.min(displayedText.length, accumulatedText.length);
+              while (agree < maxAgree && displayedText[agree] === accumulatedText[agree]) {
+                agree += 1;
+              }
+              displayedText = accumulatedText.slice(0, agree);
               setStreamingText(displayedText);
             }
             schedulePacing();
@@ -409,6 +446,7 @@ export default function SessionPage() {
             // animation finish naturally instead of the bubble snapping. We
             // bound the wait via setInterval+timeout so a stuck pacing loop
             // can't keep the UI in "streaming" forever.
+            commitStarted = true;
             const commit = () => {
               flushImmediate();
               api.getSession(sessionId).then((d) => {
@@ -456,9 +494,12 @@ export default function SessionPage() {
               );
               const timeoutMs = Math.min(120000, Math.max(4000, projectedMs + 3000));
               const start = Date.now();
-              const poll = window.setInterval(() => {
+              commitPollId = window.setInterval(() => {
                 if (pacingDone() || Date.now() - start > timeoutMs) {
-                  window.clearInterval(poll);
+                  if (commitPollId !== null) {
+                    window.clearInterval(commitPollId);
+                    commitPollId = null;
+                  }
                   commit();
                 }
               }, 80);
@@ -481,8 +522,11 @@ export default function SessionPage() {
       },
       () => {
         // Stream closed without run_complete (e.g. network blip) — refetch.
+        // If run_complete already kicked off the commit path, skip the refetch:
+        // commit() does its own getSession and overwriting fresh state with a
+        // second concurrent fetch can clobber it (race on reconnect).
         cancelPendingFlushes();
-        if (pendingCommitRef.current) return;
+        if (commitStarted) return;
         api.getSession(sessionId).then((d) => {
           setSession(d.session);
           setArtifacts(d.artifacts);
@@ -498,6 +542,7 @@ export default function SessionPage() {
     );
 
     stopRef.current = () => {
+      cancelled = true;
       cancelPendingFlushes();
       unsubscribe();
     };
@@ -723,13 +768,6 @@ export default function SessionPage() {
     }
   }, [messages, sessionId, audience, isStreaming, attachStream, documents]);
 
-  // No-op: commit now happens immediately on run_complete. Kept as a safety
-  // shim in case a stale deferred flush was queued (e.g. race on reconnect).
-  const handleTypewriterComplete = useCallback(() => {
-    const pending = pendingCommitRef.current;
-    if (pending) { pendingCommitRef.current = null; pending(); }
-  }, []);
-
   const previewOpen = !!previewArtifact;
 
   return (
@@ -855,7 +893,6 @@ export default function SessionPage() {
                 }
               }
             }}
-            onTypewriterComplete={handleTypewriterComplete}
             liveContextPercent={liveContextPercent}
             onCompact={handleCompact}
             compacting={compacting}

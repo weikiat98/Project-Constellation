@@ -29,6 +29,7 @@ import ArtifactCard from "./ArtifactCard";
 import ContextMeter from "./ContextMeter";
 import TokenCounter from "./TokenCounter";
 import AgentTracePanel from "./AgentTracePanel";
+import ErrorBanner from "./ErrorBanner";
 import type { TraceEntry } from "./AgentTrace";
 
 // Citation regex is centralised in `@/lib/citations` and reused here. The /g
@@ -232,7 +233,13 @@ export interface ChatMessage {
   artifactIds?: string[]; // artifacts produced *during this turn* — rendered inline with this message only
   // For system role: a transient marker shown as a centred banner in the chat
   // (e.g. "~ switched to layperson mode ~"). Not persisted on the server.
-  systemKind?: "audience_change";
+  systemKind?: "audience_change" | "error";
+  // For system role with systemKind="error": the engineer-facing message,
+  // hidden behind a "Show technical details" toggle. `content` carries the
+  // plain-English (layman) explanation shown by default.
+  errorTechnical?: string;
+  errorCode?: string;
+  errorStatus?: number | null;
 }
 
 interface Props {
@@ -757,6 +764,16 @@ function MessageRow({
   }
 
   if (msg.role === "system") {
+    if (msg.systemKind === "error") {
+      return (
+        <ErrorBanner
+          layman={msg.content}
+          technical={msg.errorTechnical}
+          code={msg.errorCode}
+          status={msg.errorStatus ?? null}
+        />
+      );
+    }
     // Centred dim banner — used for audience-mode switches so the user has a
     // clear visual marker of when their toggle / inferred-from-prompt change
     // took effect. Not persisted; transient only.

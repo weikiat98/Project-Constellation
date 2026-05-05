@@ -40,6 +40,7 @@ from backend.models import (
     TokenCountRequest,
 )
 from backend.orchestrator.compactor import WINDOW, _count_tokens_approx
+from backend.orchestrator.errors import classify as classify_error
 from backend.orchestrator.event_bus import event_registry
 from backend.orchestrator.lead import MODEL, run_lead
 from backend.orchestrator.tools import LEAD_TOOLS
@@ -287,7 +288,14 @@ async def submit_message(session_id: str, body: MessageCreate):
                 final_state = "cancelled"
         except Exception as exc:
             final_state = "error"
-            bus.publish("error", message=str(exc))
+            payload = classify_error(exc)
+            bus.publish(
+                "error",
+                message=payload.layman,
+                technical=payload.technical,
+                code=payload.code,
+                status=payload.status,
+            )
         finally:
             bus.close()
             event_registry.close(session_id)

@@ -508,7 +508,18 @@ export default function SessionPage() {
           }
           case "error":
             cancelPendingFlushes();
-            setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: uid(),
+                role: "system",
+                systemKind: "error",
+                content: event.message,
+                errorTechnical: event.technical,
+                errorCode: event.code,
+                errorStatus: event.status ?? null,
+              },
+            ]);
             accumulatedText = "";
             accumulatedThinking = "";
             displayedText = "";

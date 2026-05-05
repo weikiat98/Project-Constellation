@@ -7,6 +7,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.3.2] — 2026-05-05: Rate-limit protection and structured error display
+
+### Added
+
+- **Rate-limit & retry module** (`backend/orchestrator/rate_limit.py`) — two layered defenses against API surge and 429 responses:
+  - **Concurrency semaphore** — `MAX_CONCURRENT_REQUESTS` (default 3) caps the number of simultaneous Anthropic streams so parallel subagent spawns cannot burst above the per-minute token budget. Tunable via `ANTHROPIC_MAX_CONCURRENCY`.
+  - **Exponential backoff with jitter** — `with_retry()` (for unary calls) and `retrying_stream()` (for streaming calls) catch `RateLimitError` (429), `APITimeoutError`, `APIConnectionError`, and all 5xx `APIStatusError` responses. Retries up to `ANTHROPIC_MAX_RETRIES` (default 5) times, honoring the `retry-after` response header from Anthropic verbatim when present. Additional env vars: `ANTHROPIC_BASE_BACKOFF` (default 1.0 s), `ANTHROPIC_MAX_BACKOFF` (default 30 s).
+  - Applied to all three API call sites: Lead agentic loop stream ([backend/orchestrator/lead.py](backend/orchestrator/lead.py)), subagent stream ([backend/orchestrator/subagent.py](backend/orchestrator/subagent.py)), and context compactor ([backend/orchestrator/compactor.py](backend/orchestrator/compactor.py)).
+
+- **Structured error classifier** (`backend/orchestrator/errors.py`) — `classify(exc)` maps any Python exception to an `ErrorPayload(code, status, technical, layman)`. Covers all Anthropic HTTP error codes (400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504, 529) plus `APIConnectionError` and generic internal errors. Used by `app.py` to populate the SSE `"error"` event.
+
+- **Client-side error classifier** (`frontend/lib/clientErrors.ts`) — mirrors the backend classifier for fetch-level failures (uploads, deletes). Parses the `API ${status}: ${body}` shape thrown by `lib/api.ts` and returns the same `{ code, status, technical, layman }` shape.
+
+- **`ErrorBanner` component** (`frontend/components/ErrorBanner.tsx`) — reusable inline chat banner for displaying structured errors. Shows the plain-English **layman** explanation by default; a "Show technical details" toggle reveals the HTTP status, error code, and full technical message for developers and bug reports.
+
+### Changed
+
+- **SSE `"error"` event carries structured payload** ([backend/app.py](backend/app.py), [frontend/lib/sse.ts](frontend/lib/sse.ts)) — the event previously published only `message: str(exc)`. It now publishes `message` (layman explanation), `technical` (exact exception type + raw API body), `code` (short stable identifier), and `status` (HTTP status code). The `ErrorEvent` TypeScript interface was extended with the three new optional fields.
+
+- **Orchestrator errors render as `ErrorBanner`** ([frontend/app/sessions/[id]/page.tsx](frontend/app/sessions/%5Bid%5D/page.tsx), [frontend/components/ChatPane.tsx](frontend/components/ChatPane.tsx)) — previously appended to the chat as a plain assistant bubble containing the raw Python exception string. Now injected as a `system`-role message with `systemKind: "error"` and rendered by `ErrorBanner`. `ChatMessage` extended with `systemKind: "error"`, `errorTechnical`, `errorCode`, and `errorStatus` fields.
+
+- **Upload errors show layman + technical detail** ([frontend/components/UploadZone.tsx](frontend/components/UploadZone.tsx)) — the previous plain red text string on upload failure is replaced by an inline red-tinted panel with the layman explanation and a collapsible technical section.
+
+### Notes
+
+- Error banners in the chat are **not persisted** to the server (same as audience-change banners) — they disappear on page reload. A future release may add optional persistence for repeat failures.
+- The `count_tokens` endpoint in `app.py` deliberately does **not** use the retry wrapper — it already falls back to the local approximation on any failure, so adding retries would only slow down the UI.
+
+---
+
 ## [2.3.1] — 2026-05-02: Citation hallucination hardening
 
 ### Changed

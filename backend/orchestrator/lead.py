@@ -34,6 +34,7 @@ from backend.orchestrator.tools import LEAD_TOOLS, handle_tool, normalize_chunk_
 from backend.orchestrator.subagent import run_subagent
 from backend.orchestrator.compactor import maybe_compact, _count_tokens_approx
 from backend.orchestrator.event_bus import SessionEventBus
+from backend.orchestrator.rate_limit import retrying_stream
 
 # change to claude-opus-4-6 for production and use claude-sonnet-4-6 for testing. 
 # claude-haiku-4-5-20251001 is cost-effective for development but might face issue distinguishing different target audience 
@@ -455,7 +456,9 @@ async def run_lead(
             percent=round(est_tokens / WINDOW * 100, 1),
         )
 
-        async with _stream_fn(**_common, messages=messages) as stream:
+        async with retrying_stream(
+            lambda: _stream_fn(**_common, messages=messages)
+        ) as stream:
             # Stream thinking and text blocks as they arrive.
             # With adaptive thinking enabled, the model emits thinking blocks
             # (routed to the Thinking panel) and text blocks (inter-tool

@@ -29,6 +29,7 @@ import anthropic
 
 from backend.store.sessions import get_chunk, finish_agent_run, create_agent_run
 from backend.orchestrator.event_bus import SessionEventBus
+from backend.orchestrator.rate_limit import retrying_stream
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
@@ -152,18 +153,20 @@ async def run_subagent(
 
     # Agentic loop
     for _iteration in range(20):  # safety limit
-        async with client.messages.stream(
-            model=MODEL,
-            max_tokens=10000,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            tools=_SUBAGENT_TOOLS,
-            messages=messages,
+        async with retrying_stream(
+            lambda: client.messages.stream(
+                model=MODEL,
+                max_tokens=10000,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                tools=_SUBAGENT_TOOLS,
+                messages=messages,
+            )
         ) as stream:
             # Subagent output is internal reasoning — the Lead consumes
             # `result_text` via the subagent's return value, not the chat

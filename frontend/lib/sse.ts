@@ -85,6 +85,9 @@ export interface CompactionDoneEvent {
 export interface ErrorEvent {
   type: "error";
   message: string;
+  technical?: string;
+  code?: string;
+  status?: number | null;
 }
 
 export type SSEEvent =

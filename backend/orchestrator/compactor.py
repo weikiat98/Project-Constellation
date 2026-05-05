@@ -15,6 +15,8 @@ from typing import Any
 
 import anthropic
 
+from backend.orchestrator.rate_limit import with_retry
+
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 WINDOW = 200_000
 COMPACT_THRESHOLD = 0.85  # trigger at 85%
@@ -89,11 +91,13 @@ async def maybe_compact(
     )
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    resp = await client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        system=_COMPACT_PROMPT,
-        messages=[{"role": "user", "content": history_text}],
+    resp = await with_retry(
+        lambda: client.messages.create(
+            model=MODEL,
+            max_tokens=4096,
+            system=_COMPACT_PROMPT,
+            messages=[{"role": "user", "content": history_text}],
+        )
     )
     summary = resp.content[0].text if resp.content else "(empty summary)"
 

@@ -81,9 +81,9 @@ All routes are mounted under `/api`. Base URL defaults to `http://localhost:8000
 | DELETE | `/api/sessions/{id}/documents/{document_id}` | 200 / 404 / 409 | Remove a document from the session. **409** if the document is referenced by any persisted message's `attached_document_ids` (would orphan chip rendering on past turns). |
 | POST | `/api/sessions/{id}/messages` | 202 | Submit user prompt. Body: `{ content: string, audience: "layperson"\|"professional"\|"expert", attached_document_ids?: string[] }`. Document IDs are persisted on the message so chip rendering survives reloads. Kicks off the agent run. |
 | GET | `/api/sessions/{id}/stream` | 200 (SSE) | Server-Sent Events stream of agent events. |
-| GET | `/api/sessions/{id}/context` | 200 | Token usage estimate: `{ tokens, window, percent }`. |
+| GET | `/api/sessions/{id}/context` | 200 | Token usage estimate: `{ tokens, window, percent }`. Builds the full prompt overhead (rendered system prompt for the session's audience + tool definitions + doc index up to 50 chunks) so the value matches what a real run publishes in `context_usage` SSE events. Used to seed the context meter on session mount. |
 | POST | `/api/sessions/{id}/compact` | 200 | Manually trigger context compaction. |
-| POST | `/api/sessions/{id}/count_tokens` | 200 | Pre-send token estimate. Body: `{ content: string }`. Returns `{ prompt_tokens, base_tokens, total_tokens, window, percent }`. Calls Anthropic's free `count_tokens` endpoint under the hood; falls back to the in-house approximation on failure. |
+| POST | `/api/sessions/{id}/count_tokens` | 200 | Pre-send token estimate. Body: `{ content: string, attached_document_ids?: string[] }`. Returns `{ prompt_tokens, base_tokens, total_tokens, window, percent }`. Calls Anthropic's free `count_tokens` endpoint under the hood; falls back to the in-house approximation on failure. |
 | GET | `/api/sessions/{id}/trace` | 200 | Replay persisted trace events: `{ events: PersistedTraceEvent[] }`. |
 | GET | `/api/artifacts/{id}` | 200 | Artifact content + metadata (for download or preview). |
 | GET | `/api/chunks/{id}` | 200 | Source chunk content + document filename (powers the citation drawer). |
@@ -103,7 +103,7 @@ All request/response bodies are typed via Pydantic v2 models in [backend/models.
 - `DocumentOut { id, session_id, filename, chunk_count, original_filename? }`
 - `ArtifactOut { id, session_id, name, content, mime_type, citations_json? }`
 - `ContextUsageOut { tokens, window, percent }`
-- `TokenCountRequest { content: string = "" }`
+- `TokenCountRequest { content: string = "", attached_document_ids?: list[str] }`
 - `TokenCountOut { prompt_tokens, base_tokens, total_tokens, window, percent }`
 - `AgentRunOut { id, session_id, parent_agent_id?, role, status, tokens_in, tokens_out }`
 
@@ -142,8 +142,14 @@ Defined in [backend/orchestrator/lead.py](backend/orchestrator/lead.py). The Lea
 - **Max iterations**: 40 (safety limit).
 - **Max tokens per call**: 64,000.
 - **Tools available**: `search_document`, `read_document_chunk`, `resolve_reference`, `lookup_definition`, `spawn_subagent`, `write_artifact`, `finalize`.
-- **System prompt**: loaded from `_LEAD_SYSTEM` (see source). Augmented at runtime with the selected audience instruction and marked `cache_control: { type: "ephemeral" }` to enable prompt caching with a 1-hour TTL.
-- **Initial user content**: a chunk index (up to 50 chunks) followed by the user's question.
+- **System prompt**: rendered by `build_system_prompt(audience)` (exported for use by token-counting endpoints). Augmented with the selected audience instruction and marked `cache_control: { type: "ephemeral" }` to enable prompt caching with a 1-hour TTL.
+- **Initial user content**: optionally preceded by prior chat history (see below), then a doc-index block (up to 50 chunks), an artifact catalogue (see below), and the user's question.
+
+**Conversation history replay.** Prior persisted user/assistant turns are prepended to the `messages` array before each run. Tool-use blocks are excluded — the recap text already references artifacts by name and chunks by UUID. Without this, follow-up prompts ("convert that to CSV", "extend point 3") produced hallucinated chunk IDs because the model had no memory of what it wrote in previous turns.
+
+**Artifact catalogue.** Existing session artifacts are listed under a `## Existing Artifacts In This Session` block in the initial user content (up to 400 chars of content preview per artifact). This lets the Lead acknowledge and reference prior artifacts on follow-up requests without re-running the full document pipeline.
+
+**`run_complete` ordering.** In all three finalization branches, `add_message(...)` is awaited before `bus.publish("run_complete", ...)`. The SSE consumer calls `getSession()` immediately on receiving `run_complete`; if the assistant row hasn't been written yet, that fetch returns stale data and the streaming bubble hangs until a reload.
 
 On each iteration the Lead:
 
@@ -176,7 +182,7 @@ Defined in [backend/orchestrator/subagent.py](backend/orchestrator/subagent.py).
 - A single tool: `read_document_chunk`.
 - Max 20 iterations, max 10,000 tokens per call.
 
-Output is streamed as `thinking_delta` (not `text_delta`) because the Lead consumes the subagent's `result_text` via the return value, not via the chat stream. `agent_done` fires when the subagent returns, carrying the first ~200 chars as a summary.
+Output is streamed as `thinking_delta` (not `text_delta`) because the Lead consumes the subagent's `result_text` via the return value, not via the chat stream. `agent_done` fires when the subagent returns, carrying up to 2000 chars as a summary (raised from 200 in 2.2).
 
 ### 3.3 Lead tool catalogue
 
@@ -348,11 +354,13 @@ There is no migration framework. Lightweight inline migrations run in `_init_db`
 
 - `sessions.pinned INTEGER DEFAULT 0` — added in 2.0.
 - `sessions.audience TEXT NOT NULL DEFAULT 'professional'` — added in 2.1.
-- `sessions.last_run_state TEXT NOT NULL DEFAULT 'idle'` — added in 2.2 to support multi-session SSE re-attach. Values: `idle | running | completed | error`.
+- `sessions.last_run_state TEXT NOT NULL DEFAULT 'idle'` — added in 2.2 to support multi-session SSE re-attach. Values: `idle | running | completed | error | cancelled`.
 - `documents.original_filename TEXT` — added in 2.0; backfilled from `filename`.
 - `messages.artifact_ids_json TEXT` — added in 2.0 for per-turn artifact linkage.
 - `messages.thinking TEXT` — added in 2.0 for persisted reasoning trace.
 - `messages.attached_document_ids_json TEXT` — added in 2.2 so per-message document chips re-render correctly after reload.
+
+No schema changes in 2.3.x. The `get_chunks_for_document(document_id, limit?)` helper gained an optional `limit` parameter in 2.3.3 (SQL-level `LIMIT ?`); callers that previously sliced results in Python now delegate to the database.
 
 Schema changes are idempotent because every DDL is `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` and every `ALTER TABLE` is gated on a column-presence check.
 
@@ -415,6 +423,10 @@ Refs (not state — don't trigger re-renders):
 
 `attachStream` in the session page is the single entry point for wiring `EventSource` events into state. Each run's artifacts are tracked in a local `runArtifactIds` array so the assistant message persisted at `run_complete` can carry just the files produced for that specific turn.
 
+**Artifact reveal sequence (2.3.3).** `setRunArtifactIds` is no longer called from the `artifact_written` handler. Instead, IDs are buffered in a local `runArtifactIds` array and the "Generated files" button only appears when `commit()` swaps the streaming bubble for the persisted message (step 2). The artifact preview canvas opens 600 ms after that (step 3), giving the button time to render before the canvas slides in. This eliminates the layout shift that made long answers appear to stop mid-sentence.
+
+**Token counter caching (2.3.3).** `ChatPane` maintains a `baseTokenCacheRef` that holds the last fetched `{ base_tokens, window, docKey }`. The base count is refetched from `POST /count_tokens` (with empty content) only when the document set changes or `isStreaming` flips from `true` to `false`. Keystrokes compute `prompt_tokens = Math.ceil(input.length / 4)` locally and derive `total_tokens = base_tokens + prompt_tokens` without a network round-trip. `ContextMeter` no longer fetches `GET /context` independently — it receives `totalTokens` and `window` props from `ChatPane`.
+
 ### 8.3 Streaming strategy
 
 The SSE client in [frontend/lib/sse.ts](frontend/lib/sse.ts) connects **directly to `http://<host>:8000`**, bypassing the Next.js proxy. Reason: Next.js proxies buffer streamed responses and deliver every event in a single burst at the end of the run, which defeats the purpose of streaming. The base URL can be overridden with `NEXT_PUBLIC_SSE_BASE`.
@@ -447,6 +459,8 @@ The empty-recap edge case (rare — a `finalize` with empty `result` that the ba
 ### 8.4 Citation rendering and source drawer
 
 Utility: [frontend/lib/citations.ts](frontend/lib/citations.ts). The chat renderer replaces `[chunk_id]` substrings with `<CitationLink>` components that open `SourceDrawer` with the clicked chunk. `SourceDrawer` calls `GET /api/chunks/{id}` which also returns the document filename (so the drawer header can show a meaningful label instead of an opaque hash).
+
+**`CitationLink` null-result handling (2.3.3).** A `null` response from `GET /api/chunks/{id}` is not written to the in-memory `_cache`. If the fetch returns null and no retry has been attempted yet, a `setTimeout` schedules one retry after 2 seconds. This catches chunks that were not committed to the database when citations first rendered during streaming (the Lead publishes `final_message` and the frontend renders citations before `add_message` completes in some edge cases). After the retry, null results are accepted as final so the component doesn't loop indefinitely.
 
 ### 8.5 Artifact preview
 

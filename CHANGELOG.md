@@ -7,6 +7,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.3.3] — 2026-05-07: Conversation continuity, token-meter accuracy, and streaming robustness
+
+### Added
+
+- **Artifact catalogue injected into Lead context** ([backend/orchestrator/lead.py](backend/orchestrator/lead.py)) — at the start of every run, existing session artifacts are listed under a `## Existing Artifacts In This Session` block in the initial user content. The Lead can now acknowledge, convert, or extend prior artifacts without hallucinating that none exist. The catalogue includes `artifact_id`, `name`, `mime_type`, and a 400-character content preview per artifact.
+
+- **Conversation history folded into the Lead `messages` array** ([backend/orchestrator/lead.py](backend/orchestrator/lead.py)) — prior persisted user/assistant turns are prepended to the Lead's in-flight `messages` list before each run. Previously the Lead started from a blank slate every turn, which caused follow-up prompts ("convert that to CSV", "extend point 3") to produce hallucinated chunk IDs and claims like "I don't see any artifact in this session." Tool-use blocks are omitted from the replay — the recap text already references artifacts by name and chunks by UUID, which is sufficient grounding.
+
+- **`build_system_prompt(audience)` exported from `lead.py`** — renders the full system prompt for a given audience. Used by `app.py`'s `/context` endpoint so the overhead estimate matches what a real run will actually send, instead of an empty-string stand-in.
+
+- **`get_chunks_for_document` gains an optional `limit` parameter** ([backend/store/sessions.py](backend/store/sessions.py)) — avoids fetching every chunk from the database when only the first 50 (for the doc index) are needed. All three callers (`run_lead`, `count_tokens`, `get_context`) now pass `limit=50`.
+
+- **`CitationLink` retry on null** ([frontend/components/CitationLink.tsx](frontend/components/CitationLink.tsx)) — if a chunk lookup returns `null` during streaming (chunk not yet committed to the database), a single retry is scheduled 2 seconds later. Previously a null result was cached permanently, meaning the citation label stayed as the raw UUID for the rest of the session.
+
+### Changed
+
+- **`/api/sessions/{id}/context` now includes full prompt overhead** ([backend/app.py](backend/app.py)) — the endpoint previously returned only the raw chat-history character count. It now builds the rendered system prompt for the session's audience, constructs the doc-index string (up to 50 chunks), and adds the tool-definition sizes, mirroring the overhead components that `run_lead` publishes in `context_usage` SSE events. The result stays consistent with the `/count_tokens` estimate and no longer jumps between values as the source of truth flips between runs.
+
+- **`ContextMeter` decoupled from its own API fetch** ([frontend/components/ContextMeter.tsx](frontend/components/ContextMeter.tsx)) — the component no longer calls `GET /api/sessions/{id}/context` directly. It now accepts `totalTokens` and `window` props from `ChatPane`, which already owns the token-count state. Removes a duplicate network request per session mount.
+
+- **Token counter uses a cached baseline** ([frontend/components/ChatPane.tsx](frontend/components/ChatPane.tsx)) — the base token count (history + docs + tools, no draft) is fetched once on session load or after a run completes via a `baseTokenCacheRef`. Subsequent keystrokes derive the prompt-delta locally (`Math.ceil(input.length / 4)`) without hitting the API. The cache is busted when the document set changes (new upload or delete) or when `isStreaming` transitions from `true` to `false`. Previously every 400 ms debounce window triggered a full Anthropic `count_tokens` round-trip.
+
+- **`run_complete` published after `add_message`** ([backend/orchestrator/lead.py](backend/orchestrator/lead.py)) — in all three finalization branches (`finalize` call, `end_turn` plain-text, and the `finalize`-miss recovery ladder), `bus.publish("run_complete", ...)` now runs strictly after the `await add_message(...)` call. Previously the order was reversed: the frontend received `run_complete`, immediately called `getSession()`, and could receive a response that did not yet contain the new assistant row, leaving the chat bubble in a partial-text hang until the user refreshed.
+
+- **Three-step artifact reveal sequence** ([frontend/app/sessions/[id]/page.tsx](frontend/app/sessions/%5Bid%5D/page.tsx)) — opening the artifact preview canvas immediately on `artifact_written` caused a layout shift that made the recap text appear to stop mid-sentence. The sequence is now staged: (1) `run_complete` fires the pacing-wait loop; (2) pacing completes and `commit()` swaps the streaming bubble for the persisted message — this is when the "Generated files" button appears; (3) 600 ms later the preview canvas opens. `setRunArtifactIds` is no longer called from the `artifact_written` handler; the IDs are buffered locally and set by `commit()`.
+
+- **SSE close / commit race fixed** ([frontend/app/sessions/[id]/page.tsx](frontend/app/sessions/%5Bid%5D/page.tsx)) — `cancelPendingFlushes()` is now guarded by `if (commitStarted)` in the `onClose` callback. The SSE connection closes synchronously after `run_complete` is dispatched; without the guard, `cancelPendingFlushes()` ran mid-pacing for every long response and left the bubble in a partial-text state until the user refreshed.
+
+- **`CitationLink` null results no longer cached** ([frontend/components/CitationLink.tsx](frontend/components/CitationLink.tsx)) — a `null` response from `GET /api/chunks/{id}` is not written to `_cache`. Caching null permanently prevented the document-name label from appearing once the chunk was committed.
+
+- **Live context percent cleared on run completion** ([frontend/app/sessions/[id]/page.tsx](frontend/app/sessions/%5Bid%5D/page.tsx)) — `setLiveContextPercent(undefined)` is called inside `commit()` so the stale in-flight SSE estimate doesn't linger after the run finishes. The accurate post-run value from `count_tokens` then takes over.
+
+---
+
 ## [2.3.2] — 2026-05-05: Rate-limit protection and structured error display
 
 ### Added

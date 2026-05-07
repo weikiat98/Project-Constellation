@@ -4,13 +4,14 @@ A full-stack multi-agent system for deep analysis of lengthy and technical docum
 
 Every claim in every answer carries a citation. Every citation is clickable. Every source is verifiable.
 
-> **Version 2.3** — Adaptive thinking, run cancellation, multi-file upload, and robustness fixes. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+> **Version 2.3.3** — Conversation continuity, token-meter accuracy, and streaming robustness. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ---
 
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [What's new in 2.3.3](#whats-new-in-233)
 - [What's new in 2.3](#whats-new-in-23)
 - [What's new in 2.2](#whats-new-in-22)
 - [What's new in 2.1](#whats-new-in-21)
@@ -38,6 +39,21 @@ Four product goals shape every feature:
 2. **Navigable** — FTS5 keyword search, cross-reference resolution, and defined-term lookup inside the document.
 3. **Verifiable** — every factual claim links back to its source chunk. Subagent output missing citations is flagged and rejected.
 4. **Actionable** — structured deliverables (obligation tables, comparisons, summaries) are persisted as downloadable artifacts (Markdown, HTML, CSV).
+
+---
+
+## What's new in 2.3.3
+
+Conversation continuity, token-meter accuracy, and streaming robustness fixes.
+
+- **Conversation memory across turns** — the Lead now receives the full prior chat history on every run. Follow-up prompts like "convert that to CSV" or "extend point 3" work correctly instead of producing hallucinated chunk IDs or claiming no artifact exists.
+- **Artifact catalogue in Lead context** — existing session artifacts are listed in the initial user content (with a 400-char preview each) so the Lead can reference, convert, or extend them without rediscovering the document from scratch.
+- **Context meter accuracy** — `GET /api/sessions/{id}/context` now builds the rendered system prompt, doc-index string, and tool definitions for the correct audience, matching what a real run sends. The meter no longer jumps at the start of each turn.
+- **Token counter no longer spams the API** — the base token count (history + docs + tools) is fetched once per session and cached. Keystrokes derive the draft-prompt delta locally; the cache is only busted on document changes or run completion.
+- **`run_complete` published after `add_message`** — fixes a race where the frontend's `getSession()` call (triggered by `run_complete`) could arrive before the new assistant row was written, leaving the chat bubble in a partial-text hang.
+- **Three-step artifact reveal** — artifacts now reveal in sequence: recap text streams → "Generated files" button appears → canvas opens (600 ms later). Eliminates the layout shift that made long answers appear to stop mid-sentence.
+- **Citation label retry** — `CitationLink` now retries a failed chunk lookup once after 2 seconds, catching chunks that weren't committed yet when citations first rendered mid-stream. Null results are no longer cached permanently.
+- **SSE close/commit race fixed** — `cancelPendingFlushes()` is skipped when a `run_complete` commit is already in progress, preventing long responses from being stranded in a partial-text state.
 
 ---
 
@@ -279,7 +295,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-> The terminal prints `constellation@2.3.0 dev` — that's the package name and version from [frontend/package.json](frontend/package.json), not a warning.
+> The terminal prints `constellation@2.3.3 dev` — that's the package name and version from [frontend/package.json](frontend/package.json), not a warning.
 
 ### 5. Stop the servers
 

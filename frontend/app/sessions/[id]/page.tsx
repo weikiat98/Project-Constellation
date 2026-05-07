@@ -159,9 +159,12 @@ export default function SessionPage() {
   const [streamingText, setStreamingText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
-  // Artifact IDs produced during the currently-streaming turn. Rendered as
-  // "Generated files" rows inside the live assistant bubble so the user sees
-  // the download button appear while the recap is still typing in.
+  // Artifact IDs produced during the currently-streaming turn. Revealed in a
+  // staged sequence after finalize: (1) recap text streams to completion,
+  // (2) the "Generated files" button appears, (3) the preview canvas opens.
+  // Showing the button mid-stream stole focus from the recap and (combined
+  // with the canvas opening early) created a perceived "hang" because the
+  // layout shifted while text was still arriving.
   const [runArtifactIds, setRunArtifactIds] = useState<string[]>([]);
   const [audience, setAudience] = useState<Audience>("professional");
   const [liveContextPercent, setLiveContextPercent] = useState<number | undefined>();
@@ -391,22 +394,6 @@ export default function SessionPage() {
               setStreamingText(displayedText);
             }
             schedulePacing();
-            // Now that the recap text is set, open the canvas for any artifact
-            // that arrived earlier this turn (artifact_written fires before finalize).
-            if (pendingPreviewArtifactId) {
-              const artifactId = pendingPreviewArtifactId;
-              pendingPreviewArtifactId = null;
-              // Delay the canvas open until after the typewriter has had time
-              // to reveal the recap, so the text streams first and the preview
-              // slides in behind it rather than stealing focus mid-animation.
-              window.setTimeout(() => {
-                api.getSession(sessionId).then((d) => {
-                  setArtifacts(d.artifacts);
-                  const newest = d.artifacts.find((a) => a.id === artifactId);
-                  if (newest) setPreviewArtifact(newest);
-                }).catch(() => {});
-              }, 1200);
-            }
             break;
           case "agent_spawned":
             setTraceEntries((p) => [...p, { id: uid(), type: "agent_spawned", timestamp: Date.now(), agent_id: event.agent_id, role: event.role }]);
@@ -415,20 +402,14 @@ export default function SessionPage() {
             setTraceEntries((p) => [...p, { id: uid(), type: "tool_use", timestamp: Date.now(), agent_id: event.agent_id, tool: event.tool, input: event.input }]);
             break;
           case "artifact_written":
+            // Buffer the artifact id locally — DON'T setRunArtifactIds yet.
+            // The "Generated files" button is revealed in commit() only after
+            // pacing has finished streaming the recap (step 2 of the 3-step
+            // finalize sequence). Canvas preview opens after that (step 3).
             runArtifactIds.push(event.artifact_id);
-            // Expose the in-flight artifact IDs to ChatPane so the "Generated
-            // files" button can render inside the streaming bubble, not only
-            // after run_complete commits the assistant message. Use a fresh
-            // copy each time so React reliably re-renders.
-            setRunArtifactIds(runArtifactIds.slice());
-            // Buffer the artifact ID — canvas preview is deferred until
-            // final_message fires so the recap text appears first.
             pendingPreviewArtifactId = event.artifact_id;
             setTraceEntries((p) => [...p, { id: uid(), type: "artifact_written", timestamp: Date.now(), artifact_id: event.artifact_id, artifact_name: event.name }]);
-            // Refresh the artifact list so the header / sidebar counts stay
-            // in sync, but defer auto-opening the preview until the recap
-            // has streamed (handled in final_message).
-            api.getSession(sessionId).then((d) => setArtifacts(d.artifacts)).catch(() => {});
+            // Artifact list is refreshed by run_complete's commit() — no extra fetch needed here.
             break;
           case "agent_done":
             setTraceEntries((p) => [...p, { id: uid(), type: "agent_done", timestamp: Date.now(), agent_id: event.agent_id, summary: event.summary }]);
@@ -440,15 +421,20 @@ export default function SessionPage() {
             setTraceEntries((p) => [...p, { id: uid(), type: "compaction_done", timestamp: Date.now(), before_tokens: event.before_tokens, after_tokens: event.after_tokens }]);
             break;
           case "run_complete": {
-            // Pacing may still be revealing the tail of accumulatedText when
-            // run_complete arrives. Defer the streaming→persisted swap until
-            // the displayed prefix has caught up so the user sees the typing
-            // animation finish naturally instead of the bubble snapping. We
-            // bound the wait via setInterval+timeout so a stuck pacing loop
-            // can't keep the UI in "streaming" forever.
+            // Three-step finalize sequence (avoids the layout-shift race where
+            // the canvas preview opened mid-stream and made the bubble appear
+            // to hang):
+            //   step 1 — wait for pacing to finish streaming the recap text
+            //   step 2 — reveal the inline "Generated files" button
+            //   step 3 — open the artifact preview canvas on the right
+            // commit() = the streaming → persisted swap, kicks off step 2.
             commitStarted = true;
             const commit = () => {
               flushImmediate();
+              // Clear the live context percent so the accurate post-run
+              // token count from the API takes over instead of the stale
+              // in-flight estimate from context_usage SSE events.
+              setLiveContextPercent(undefined);
               api.getSession(sessionId).then((d) => {
                 setSession(d.session);
                 setArtifacts(d.artifacts);
@@ -460,10 +446,26 @@ export default function SessionPage() {
                 displayedText = "";
                 displayedThinking = "";
                 runArtifactIds.length = 0;
+                // Step 2: the persisted assistant message (with its
+                // artifactIds populated by mapServerMessage) replaces the
+                // streaming bubble — that's what mounts the "Generated
+                // files" button. Clear runArtifactIds so the streaming
+                // bubble doesn't double up if it briefly re-renders.
                 setRunArtifactIds([]);
                 setStreamingText("");
                 setThinkingText("");
                 setIsStreaming(false);
+                // Step 3: open the artifact preview canvas after a short
+                // delay so step 2's button visibly appears first. Without
+                // the gap the button and canvas animate in simultaneously
+                // and the canvas pop-in steals attention from the recap.
+                if (pendingPreviewArtifactId) {
+                  const newest = d.artifacts.find((a) => a.id === pendingPreviewArtifactId);
+                  pendingPreviewArtifactId = null;
+                  if (newest) {
+                    window.setTimeout(() => setPreviewArtifact(newest), 600);
+                  }
+                }
               }).catch(() => {
                 accumulatedText = "";
                 accumulatedThinking = "";
@@ -477,8 +479,9 @@ export default function SessionPage() {
               });
             };
 
-            // Wait for pacing to finish before swapping streaming → persisted.
-            // Timeout is dynamic so long answers don't snap mid-animation.
+            // Step 1: wait for pacing to finish streaming the recap before
+            // swapping streaming → persisted. Timeout is dynamic so long
+            // answers don't snap mid-animation.
             const pacingDone = () =>
               displayedText.length >= accumulatedText.length &&
               displayedThinking.length >= accumulatedThinking.length;
@@ -533,11 +536,14 @@ export default function SessionPage() {
       },
       () => {
         // Stream closed without run_complete (e.g. network blip) — refetch.
-        // If run_complete already kicked off the commit path, skip the refetch:
-        // commit() does its own getSession and overwriting fresh state with a
-        // second concurrent fetch can clobber it (race on reconnect).
-        cancelPendingFlushes();
+        // If run_complete already kicked off the commit path, skip the refetch
+        // AND skip cancelPendingFlushes(): commit() is mid-pacing or
+        // mid-poll waiting for pacing to catch up, and cancelling here would
+        // strand the bubble in a partial-text state. SSE close fires
+        // synchronously after run_complete, so without this guard every long
+        // response left the UI hanging until the user refreshed.
         if (commitStarted) return;
+        cancelPendingFlushes();
         api.getSession(sessionId).then((d) => {
           setSession(d.session);
           setArtifacts(d.artifacts);

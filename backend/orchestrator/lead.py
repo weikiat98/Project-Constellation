@@ -26,6 +26,7 @@ from backend.store.sessions import (
     get_documents,
     get_chunks_for_document,
     get_messages,
+    get_artifacts,
     add_message,
     create_agent_run,
     finish_agent_run,
@@ -91,6 +92,23 @@ not markdown syntax. Only switch formats when the user explicitly asks for one.
 If the user asks to convert an existing artifact to a different format, call
 `write_artifact` again with the same content reformatted and the requested
 `mime_type`.
+
+## Reusing context from earlier turns
+The user message may include a "## Existing Artifacts In This Session" block
+listing artifacts you (or an earlier run) produced previously, and prior chat
+turns appear above the current user question. Treat both as authoritative
+context:
+- If the user references an earlier artifact ("convert that to markdown",
+  "extend point 3", "redo it as CSV"), reuse the listed preview/content as
+  your factual basis. Do NOT claim no artifact exists — the catalogue is
+  proof that one does.
+- Reuse the SAME chunk_id citations that appeared in your earlier final
+  message or in the artifact preview. Do not invent new chunk_ids when the
+  factual content is unchanged. Hallucinated chunk_ids fail the citation
+  validity check and break the user's source links.
+- Only spawn fresh subagents when the follow-up actually needs new
+  document-grounded findings. Pure-format conversions ("same content as
+  CSV") do not require new research.
 
 ## Finalize contract (STRICT — this is how the turn ends)
 **Every turn MUST end with exactly one `finalize` tool call.** The `result`
@@ -232,6 +250,17 @@ _AUDIENCE_FINALIZE_CHECKS = {
 }
 
 
+def build_system_prompt(audience: str = "professional") -> str:
+    """Render the lead system prompt for a given audience. Exported for token counting."""
+    instruction = _AUDIENCE_INSTRUCTIONS.get(audience, _AUDIENCE_INSTRUCTIONS["professional"])
+    finalize_check = _AUDIENCE_FINALIZE_CHECKS.get(audience, _AUDIENCE_FINALIZE_CHECKS["professional"])
+    return _LEAD_SYSTEM.format(
+        audience=audience,
+        audience_instruction=instruction,
+        audience_finalize_check=finalize_check,
+    )
+
+
 def _build_tools(use_advisor: bool) -> tuple[list[dict], list[str]]:
     """Return (tools_list, betas) with or without the advisor tool appended."""
     if not use_advisor:
@@ -362,9 +391,9 @@ async def run_lead(
 
     doc_context_parts = []
     for doc in docs:
-        chunks = await get_chunks_for_document(doc["id"])
+        chunks = await get_chunks_for_document(doc["id"], limit=50)
         chunk_lines = []
-        for c in chunks[:50]:  # show first 50 chunks as index
+        for c in chunks:
             section = f" [§{c['section_id']}]" if c.get("section_id") else ""
             page = f" p.{c['page']}" if c.get("page") else ""
             preview = c["content"][:120].replace("\n", " ")
@@ -386,15 +415,71 @@ async def run_lead(
         audience_finalize_check=audience_finalize_check,
     )
 
+    # Prior-session artifact catalogue. The Lead's per-turn message array
+    # otherwise starts fresh, so on a follow-up like "regenerate that as
+    # markdown" the model has no record that write_artifact was ever called.
+    # Listing existing artifacts inline lets the model acknowledge them and
+    # reference their content/citations when producing a new format.
+    existing_artifacts = await get_artifacts(session_id)
+    if existing_artifacts:
+        artifact_lines = []
+        for a in existing_artifacts:
+            mime = a.get("mime_type") or "text/plain"
+            preview = (a.get("content") or "")[:400].replace("\n", " ")
+            artifact_lines.append(
+                f"- artifact_id={a['id']} | name={a['name']} | mime={mime}\n"
+                f"  preview: {preview}…"
+            )
+        artifact_catalogue = (
+            "## Existing Artifacts In This Session\n"
+            "These were generated in earlier turns. If the user asks to convert, "
+            "extend, or reference one of them, treat its content as known context "
+            "and cite the same chunk_ids it used — do NOT claim no artifact exists.\n"
+            + "\n".join(artifact_lines)
+            + "\n\n"
+        )
+    else:
+        artifact_catalogue = ""
+
     if doc_context_parts:
         initial_user_content = (
             f"## Document Index\n{doc_context}\n\n"
+            f"{artifact_catalogue}"
             f"## User Question\n{user_message}"
         )
     else:
-        initial_user_content = user_message
+        initial_user_content = (
+            f"{artifact_catalogue}## User Question\n{user_message}"
+            if artifact_catalogue
+            else user_message
+        )
 
-    messages: list[dict] = [{"role": "user", "content": initial_user_content}]
+    # Lightweight conversation history: prepend prior persisted user/assistant
+    # turns so the Lead can see what it said before. Without this the model
+    # has no memory across turns and follow-ups like "convert that to PDF"
+    # produce hallucinated chunk_ids (citations 404 on the frontend) and
+    # claims like "I don't see any artefact in this session." Tool-use
+    # blocks aren't replayed — the recap text already references artifacts
+    # by name and chunks by UUID, which is enough grounding for the model.
+    prior_history = await get_messages(session_id)
+    history_messages: list[dict] = []
+    # The user message for the current turn was persisted before run_lead
+    # was called (see app.submit_message), so the tail of `prior_history` is
+    # the same text as `user_message`. Drop it to avoid the model seeing the
+    # current question twice (once bare, once wrapped with the doc index).
+    if prior_history and prior_history[-1].get("role") == "user" and (
+        prior_history[-1].get("content") or ""
+    ).strip() == user_message.strip():
+        prior_history = prior_history[:-1]
+    for m in prior_history:
+        role = m.get("role")
+        content = m.get("content") or ""
+        if role in ("user", "assistant") and content.strip():
+            history_messages.append({"role": role, "content": content})
+
+    messages: list[dict] = history_messages + [
+        {"role": "user", "content": initial_user_content}
+    ]
 
     tokens_in = tokens_out = 0
     final_answer = ""
@@ -406,6 +491,21 @@ async def run_lead(
     # calls `finalize` with an empty `result` (safety net only — the system
     # prompt requires a real recap).
     artifacts_this_turn: list[dict] = []
+
+    # Persisted chat history is now folded directly into `messages` (see
+    # history_messages above), so live_tokens already covers it. No separate
+    # baseline needed — kept as 0 so the context_usage publish below stays
+    # well-typed without a special case.
+    persisted_tokens = 0
+
+    # Full-prompt baseline: only the components NOT already in `messages` —
+    # the system prompt and tool definitions. The doc index, artifact
+    # catalogue, and prior history live inside `messages` and are counted by
+    # `live_tokens` below, so adding them here would double-count.
+    prompt_overhead_tokens = (
+        len(system_prompt) // 4
+        + sum(len(str(t)) // 4 for t in tools)
+    )
 
     # Shared kwargs for every API call — switches between beta and standard
     # client depending on whether the advisor tool is active.
@@ -434,21 +534,13 @@ async def run_lead(
 
         # Check for compaction
         messages, compacted = await maybe_compact(messages, bus)
-        if compacted:
-            pass  # bus already published compaction_done
 
-        # Cumulative context estimate: persisted session history + the in-flight
-        # Lead loop buffer. Persisted history is the source of truth for "how
-        # much of the window is committed"; the loop buffer captures live tool
-        # results / subagent output that haven't been saved yet. Together they
-        # grow monotonically across turns and only dip on compaction — matching
-        # what users expect from a context meter.
-        persisted = await get_messages(session_id)
-        persisted_tokens = _count_tokens_approx(
-            [{"role": m["role"], "content": m["content"]} for m in persisted]
-        )
+        # Context estimate: the in-flight Lead `messages` buffer (which now
+        # includes prior turn history) + the static prompt overhead (system
+        # prompt + tools + doc index). Compaction shrinks `messages` directly,
+        # so live_tokens reflects the reduction without a separate baseline.
         live_tokens = sum(len(str(m)) // 4 for m in messages)
-        est_tokens = persisted_tokens + live_tokens
+        est_tokens = persisted_tokens + live_tokens + prompt_overhead_tokens
         bus.publish(
             "context_usage",
             tokens=est_tokens,
@@ -529,11 +621,12 @@ async def run_lead(
             final_answer = normalize_chunk_citation_syntax(final_answer)
             if final_answer:
                 bus.publish("thinking_clear", agent_id=lead_run_id)
-                # Note: final_answer was already streamed incrementally via text_delta
-                # during the input_json_delta phase (lines 474-487). Publishing
-                # final_message here provides the canonical full text to the frontend.
+                # Persist BEFORE publishing run_complete: the SSE consumer
+                # closes its EventSource on run_complete and immediately calls
+                # getSession() to swap the streaming bubble for the persisted
+                # message. If add_message hasn't returned yet, that fetch
+                # misses the new assistant row and the bubble appears to hang.
                 bus.publish("final_message", content=final_answer)
-                bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)
                 await add_message(
                     session_id,
@@ -545,6 +638,7 @@ async def run_lead(
                     ],
                     thinking=bus.drain_thinking() or None,
                 )
+                bus.publish("run_complete", final=final_answer[:300])
                 return final_answer
             break
 
@@ -617,8 +711,10 @@ async def run_lead(
                     remainder = ""
                 if remainder:
                     _publish_text_delta_smooth(bus, lead_run_id, remainder)
+                # Persist BEFORE run_complete so the SSE consumer's commit()
+                # getSession finds the assistant row (see end_turn branch
+                # above for the full rationale).
                 bus.publish("final_message", content=final_answer)
-                bus.publish("run_complete", final=final_answer[:300])
                 await finish_agent_run(lead_run_id, tokens_in, tokens_out)
                 await add_message(
                     session_id,
@@ -630,6 +726,7 @@ async def run_lead(
                     ],
                     thinking=bus.drain_thinking() or None,
                 )
+                bus.publish("run_complete", final=final_answer[:300])
                 return final_answer
 
             else:
@@ -755,8 +852,9 @@ async def run_lead(
             "question, or click Retry on this message to run it again."
         )
 
+    # Persist BEFORE publishing run_complete so the frontend's getSession
+    # after run_complete finds the assistant row.
     bus.publish("final_message", content=final_answer)
-    bus.publish("run_complete", final=final_answer[:300])
     await finish_agent_run(lead_run_id, tokens_in, tokens_out)
     await add_message(
         session_id,
@@ -768,5 +866,6 @@ async def run_lead(
         ],
         thinking=bus.drain_thinking() or None,
     )
+    bus.publish("run_complete", final=final_answer[:300])
 
     return final_answer

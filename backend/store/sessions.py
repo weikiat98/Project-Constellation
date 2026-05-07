@@ -517,11 +517,17 @@ async def get_chunk(chunk_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-async def get_chunks_for_document(document_id: str) -> list[dict]:
+async def get_chunks_for_document(document_id: str, limit: int | None = None) -> list[dict]:
     async with get_db() as db:
-        rows = await db.execute_fetchall(
-            "SELECT * FROM chunks WHERE document_id = ? ORDER BY idx", (document_id,)
-        )
+        if limit is not None:
+            rows = await db.execute_fetchall(
+                "SELECT * FROM chunks WHERE document_id = ? ORDER BY idx LIMIT ?",
+                (document_id, limit),
+            )
+        else:
+            rows = await db.execute_fetchall(
+                "SELECT * FROM chunks WHERE document_id = ? ORDER BY idx", (document_id,)
+            )
     return [dict(r) for r in rows]
 
 

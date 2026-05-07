@@ -36,7 +36,10 @@ async function fetchMeta(id: string): Promise<ChunkMeta> {
   const p = fetch(`/api/chunks/${normalized}`)
     .then((r) => (r.ok ? r.json() : null))
     .then((data: ChunkMeta) => {
-      _cache.set(normalized, data);
+      // Only cache successful lookups. A null result during streaming means
+      // the chunk wasn't committed yet — caching null would permanently show
+      // the UUID fallback label instead of the document name and page number.
+      if (data !== null) _cache.set(normalized, data);
       return data;
     })
     .catch(() => null)
@@ -60,6 +63,10 @@ export default function CitationLink({ chunkId, onClick }: Props) {
     ? (_cache.get(normalizedChunkId) ?? null)
     : LOADING;
   const [meta, setMeta] = useState<ChunkMeta | typeof LOADING>(cached);
+  // Retry counter: bumped when a fetch returns null so we re-attempt after a
+  // short delay. Chunks may not be committed to the DB yet when citations first
+  // render during streaming — a single retry after ~2s catches most cases.
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     if (_cache.has(normalizedChunkId)) {
@@ -67,8 +74,18 @@ export default function CitationLink({ chunkId, onClick }: Props) {
       return;
     }
     setMeta(LOADING);
-    fetchMeta(normalizedChunkId).then((m) => setMeta(m));
-  }, [normalizedChunkId]);
+    let retryTimer: ReturnType<typeof window.setTimeout> | null = null;
+    fetchMeta(normalizedChunkId).then((m) => {
+      setMeta(m);
+      // Schedule one retry if the chunk wasn't found yet (e.g. still mid-stream).
+      if (m === null && retryCount === 0) {
+        retryTimer = window.setTimeout(() => setRetryCount(1), 2000);
+      }
+    });
+    return () => { if (retryTimer !== null) window.clearTimeout(retryTimer); };
+  // retryCount is intentionally included so a null result triggers one re-fetch.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [normalizedChunkId, retryCount]);
 
   // Prefer: "filename p.N", "filename \u00A7id", "filename", "p.N", "\u00A7id".
   let label: string;

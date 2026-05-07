@@ -1,24 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Cpu, Zap } from "lucide-react";
-import { api, type ContextUsage } from "@/lib/api";
 
 interface Props {
-  sessionId: string;
-  livePercent?: number; // updated via SSE
+  totalTokens?: number;  // from /count_tokens (base_tokens or total_tokens)
+  window?: number;
+  livePercent?: number; // updated via SSE during an active run
   onCompact: () => void;
   compacting: boolean;
 }
 
-export default function ContextMeter({ sessionId, livePercent, onCompact, compacting }: Props) {
-  const [usage, setUsage] = useState<ContextUsage | null>(null);
+export default function ContextMeter({ totalTokens, window: windowSize, livePercent, onCompact, compacting }: Props) {
+  const derivedPercent =
+    totalTokens != null && windowSize != null
+      ? Math.round((totalTokens / windowSize) * 1000) / 10
+      : undefined;
 
-  useEffect(() => {
-    api.getContext(sessionId).then(setUsage).catch(() => {});
-  }, [sessionId]);
-
-  const percent = livePercent ?? usage?.percent ?? 0;
+  const percent = livePercent ?? derivedPercent ?? 0;
   const color =
     percent >= 90 ? "bg-red-500" : percent >= 70 ? "bg-amber-400" : "bg-emerald-400";
   const textColor =
@@ -32,10 +30,10 @@ export default function ContextMeter({ sessionId, livePercent, onCompact, compac
   // have any usage so users see something animate.
   const barPercent = percent > 0 && percent < 1 ? 1 : Math.min(percent, 100);
 
-  const tokens = usage?.tokens;
-  const window = usage?.window;
   const tooltip =
-    tokens != null && window != null ? `${tokens.toLocaleString()} / ${window.toLocaleString()} tokens` : undefined;
+    totalTokens != null && windowSize != null
+      ? `${totalTokens.toLocaleString()} / ${windowSize.toLocaleString()} tokens`
+      : undefined;
 
   return (
     <div

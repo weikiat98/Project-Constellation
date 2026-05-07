@@ -330,6 +330,9 @@ export default function ChatPane({
   const [tokenCount, setTokenCount] = useState<TokenCount | null>(null);
   const [countingTokens, setCountingTokens] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // Cached base token count (history + docs + tools, no draft). Only changes
+  // when documents change or a run completes — not on every keystroke.
+  const baseTokenCacheRef = useRef<{ base_tokens: number; window: number; docKey: string } | null>(null);
   // "User is scrolled away from the bottom" — when true we pause auto-scroll
   // so reading earlier messages mid-stream isn't fought by every text_delta.
   // Resumes the moment the user scrolls back to (or near) the bottom.
@@ -338,20 +341,62 @@ export default function ChatPane({
   const plusRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
-  // Debounced token-count fetch: recomputes ~400ms after the user stops typing,
-  // also refreshes when the document set changes (new upload → larger base).
-  // Skipped during streaming to avoid spamming the endpoint mid-run.
+  // Stable key representing the current document set — cache busts when docs change.
+  const docKey = documents.map((d) => d.id).join(",");
+
+  // Base token fetch: called when session/documents change or after a run
+  // completes. Uses the API with empty content to get base_tokens only.
+  // Result is cached so typing never triggers an Anthropic API call.
   useEffect(() => {
     if (isStreaming) return;
+    // Bust cache if doc set changed
+    if (baseTokenCacheRef.current?.docKey !== docKey) {
+      baseTokenCacheRef.current = null;
+    }
+    if (baseTokenCacheRef.current) return; // already have a valid baseline
+    setCountingTokens(true);
+    api.countTokens(sessionId, "", documents.map((d) => d.id))
+      .then((tc) => {
+        baseTokenCacheRef.current = { base_tokens: tc.base_tokens, window: tc.window, docKey };
+        setTokenCount(tc);
+      })
+      .catch(() => {})
+      .finally(() => setCountingTokens(false));
+  }, [sessionId, docKey, isStreaming]);
+
+  // Typing effect: derive token display locally from the cached base without
+  // hitting the API. Rough estimate (~4 chars/token) for the draft prompt delta
+  // is accurate enough for display purposes. Debounced at 800ms so brief pauses
+  // mid-word don't trigger unnecessary recalculations.
+  useEffect(() => {
+    if (isStreaming) return;
+    if (!input.trim()) {
+      // Empty input — just show the base count if available.
+      if (baseTokenCacheRef.current) {
+        const { base_tokens, window: w } = baseTokenCacheRef.current;
+        setTokenCount({ prompt_tokens: 0, base_tokens, total_tokens: base_tokens, window: w, percent: Math.round(base_tokens / w * 1000) / 10 });
+      }
+      return;
+    }
     const handle = window.setTimeout(() => {
-      setCountingTokens(true);
-      api.countTokens(sessionId, input, documents.map((d) => d.id))
-        .then((tc) => setTokenCount(tc))
-        .catch(() => {})
-        .finally(() => setCountingTokens(false));
-    }, 400);
+      if (!baseTokenCacheRef.current) return;
+      const { base_tokens, window: w } = baseTokenCacheRef.current;
+      const prompt_tokens = Math.ceil(input.length / 4);
+      const total_tokens = base_tokens + prompt_tokens;
+      setTokenCount({ prompt_tokens, base_tokens, total_tokens, window: w, percent: Math.round(total_tokens / w * 1000) / 10 });
+    }, 800);
     return () => window.clearTimeout(handle);
-  }, [input, sessionId, documents, isStreaming]);
+  }, [input, isStreaming]);
+
+  // After a run completes (isStreaming flips false), bust the base cache so the
+  // next base fetch reflects the newly persisted assistant message in history.
+  const prevIsStreaming = useRef(isStreaming);
+  useEffect(() => {
+    if (prevIsStreaming.current && !isStreaming) {
+      baseTokenCacheRef.current = null;
+    }
+    prevIsStreaming.current = isStreaming;
+  }, [isStreaming]);
 
   // Track whether the user is near the bottom of the scroll container. If they
   // scroll up mid-stream we stop auto-scrolling so re-reading earlier messages
@@ -696,7 +741,8 @@ export default function ChatPane({
               hasDraft={input.trim().length > 0}
             />
             <ContextMeter
-              sessionId={sessionId}
+              totalTokens={tokenCount?.total_tokens}
+              window={tokenCount?.window}
               livePercent={liveContextPercent}
               onCompact={onCompact}
               compacting={compacting}

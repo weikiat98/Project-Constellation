@@ -42,7 +42,7 @@ from backend.models import (
 from backend.orchestrator.compactor import WINDOW, _count_tokens_approx
 from backend.orchestrator.errors import classify as classify_error
 from backend.orchestrator.event_bus import event_registry
-from backend.orchestrator.lead import MODEL, run_lead
+from backend.orchestrator.lead import MODEL, run_lead, build_system_prompt
 from backend.orchestrator.tools import LEAD_TOOLS
 import anthropic
 from backend.store.documents import DocumentStore
@@ -392,10 +392,47 @@ async def stream_events(session_id: str):
 
 @app.get("/api/sessions/{session_id}/context", response_model=ContextUsageOut)
 async def get_context(session_id: str):
+    """
+    Context meter seed value at session mount. Reflects the full prompt budget
+    (system + tools + doc index + chat history) so it stays consistent with
+    the post-run estimate from /count_tokens — otherwise the bar would jump
+    between runs as the source of truth flips.
+    """
     messages = await get_messages(session_id)
-    tokens = _count_tokens_approx(
+    history_tokens = _count_tokens_approx(
         [{"role": m["role"], "content": m["content"]} for m in messages]
     )
+
+    # Mirror the overhead components run_lead bakes into context_usage SSE
+    # events: system prompt + tool defs + doc index. Use the session's
+    # persisted audience so the rendered system prompt matches what the
+    # next run will actually send.
+    session = await get_session(session_id)
+    session_audience = (session.get("audience") if session else None) or "professional"
+    system_prompt = build_system_prompt(session_audience)
+
+    docs = await get_documents(session_id)
+    doc_context_parts: list[str] = []
+    for doc in docs:
+        chunks = await get_chunks_for_document(doc["id"], limit=50)
+        chunk_lines = []
+        for c in chunks:
+            section = f" [§{c['section_id']}]" if c.get("section_id") else ""
+            page = f" p.{c['page']}" if c.get("page") else ""
+            preview = c["content"][:120].replace("\n", " ")
+            chunk_lines.append(f"  chunk_id={c['id']}{section}{page}: {preview}…")
+        doc_context_parts.append(
+            f"Document: {doc['filename']} ({doc['chunk_count']} chunks)\n"
+            + "\n".join(chunk_lines)
+        )
+    doc_context = "\n\n".join(doc_context_parts) if doc_context_parts else ""
+
+    overhead = (
+        len(system_prompt) // 4
+        + sum(len(str(t)) // 4 for t in LEAD_TOOLS)
+        + len(doc_context) // 4
+    )
+    tokens = history_tokens + overhead
     return ContextUsageOut(
         tokens=tokens,
         window=WINDOW,
@@ -428,9 +465,9 @@ async def count_tokens(session_id: str, body: TokenCountRequest):
         docs = [d for d in docs if d["id"] in attached_set]
     doc_context_parts: list[str] = []
     for doc in docs:
-        chunks = await get_chunks_for_document(doc["id"])
+        chunks = await get_chunks_for_document(doc["id"], limit=50)
         chunk_lines = []
-        for c in chunks[:50]:
+        for c in chunks:
             section = f" [§{c['section_id']}]" if c.get("section_id") else ""
             page = f" p.{c['page']}" if c.get("page") else ""
             preview = c["content"][:120].replace("\n", " ")
@@ -444,26 +481,53 @@ async def count_tokens(session_id: str, body: TokenCountRequest):
     )
 
     # Rebuild the message array: existing history + a synthetic new user turn.
-    # Mirror run_lead exactly: only add the doc-index wrapper when documents
-    # are present, otherwise pass the prompt verbatim. This keeps the
-    # estimate aligned with the actual API call.
+    # Mirror run_lead exactly so the count matches the real API call:
+    #   - Prepend prior persisted user/assistant turns
+    #   - Inject the artifact catalogue (existing artifacts) into the wrapper
+    #   - Wrap with the doc index when documents are present
     history = await get_messages(session_id)
     base_messages = [
         {"role": m["role"], "content": m["content"]} for m in history
     ]
 
+    existing_artifacts = await get_artifacts(session_id)
+    if existing_artifacts:
+        artifact_lines = []
+        for a in existing_artifacts:
+            mime = a.get("mime_type") or "text/plain"
+            preview = (a.get("content") or "")[:400].replace("\n", " ")
+            artifact_lines.append(
+                f"- artifact_id={a['id']} | name={a['name']} | mime={mime}\n"
+                f"  preview: {preview}…"
+            )
+        artifact_catalogue = (
+            "## Existing Artifacts In This Session\n"
+            "These were generated in earlier turns. If the user asks to convert, "
+            "extend, or reference one of them, treat its content as known context "
+            "and cite the same chunk_ids it used — do NOT claim no artifact exists.\n"
+            + "\n".join(artifact_lines)
+            + "\n\n"
+        )
+    else:
+        artifact_catalogue = ""
+
     if doc_context_parts:
-        wrapped_template = "## Document Index\n{ctx}\n\n## User Question\n{q}"
-        base_wrapped = wrapped_template.format(ctx=doc_context, q="")
-        full_wrapped = wrapped_template.format(ctx=doc_context, q=body.content)
+        wrapped_template = (
+            "## Document Index\n{ctx}\n\n{cat}## User Question\n{q}"
+        )
+        base_wrapped = wrapped_template.format(ctx=doc_context, cat=artifact_catalogue, q="")
+        full_wrapped = wrapped_template.format(ctx=doc_context, cat=artifact_catalogue, q=body.content)
+    elif artifact_catalogue:
+        base_wrapped = f"{artifact_catalogue}## User Question\n"
+        full_wrapped = f"{artifact_catalogue}## User Question\n{body.content}"
     else:
         base_wrapped = ""
         full_wrapped = body.content
 
-    system_prompt_placeholder = (
-        "You are the Lead Orchestrator of Constellation, a multi-agent document "
-        "analysis assistant. [system prompt truncated for counting]"
-    )
+    # Use the real system prompt rendered for the session's audience so the
+    # token count matches what run_lead actually sends to the model.
+    session_audience = session.get("audience") or "professional"
+    system_prompt = build_system_prompt(session_audience)
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
@@ -471,7 +535,7 @@ async def count_tokens(session_id: str, body: TokenCountRequest):
         try:
             resp = await client.messages.count_tokens(
                 model=MODEL,
-                system=system_prompt_placeholder,
+                system=system_prompt,
                 tools=LEAD_TOOLS,
                 messages=msgs,
             )

@@ -39,37 +39,37 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 ## Pre-flight
 
-- [ ] Backend running on `http://localhost:8000` (`uvicorn backend.app:app --reload --port 8000`)
-- [ ] Frontend running on `http://localhost:3000` (`npm run dev` in `frontend/`)
-- [ ] `ANTHROPIC_API_KEY` is set in the backend environment
-- [ ] `deep_reading.db` file exists after first backend start
-- [ ] On first start, backend logs show **no errors** for the two `ALTER TABLE` migrations (`last_run_state`, `attached_document_ids_json`)
-- [ ] Browser DevTools Console open — note any red errors throughout (put them in the Issue Log)
-- [ ] Browser DevTools Network tab open — watch for failed requests (red rows)
-- [ ] (Optional) `ADVISOR_MODEL=claude-opus-4-7` set if you want to exercise the advisor tool path (§8.14)
-- [ ] (Optional) `ANTHROPIC_MAX_CONCURRENCY`, `ANTHROPIC_MAX_RETRIES`, `ANTHROPIC_BASE_BACKOFF`, `ANTHROPIC_MAX_BACKOFF` left at defaults unless explicitly stress-testing rate-limit behaviour (§18.10–§18.12)
+- [P] Backend running on `http://localhost:8000` (`uvicorn backend.app:app --reload --port 8000`)
+- [P] Frontend running on `http://localhost:3000` (`npm run dev` in `frontend/`)
+- [P] `ANTHROPIC_API_KEY` is set in the backend environment
+- [P] `deep_reading.db` file exists after first backend start
+- [P] On first start, backend logs show **no errors** for the two `ALTER TABLE` migrations (`last_run_state`, `attached_document_ids_json`)
+- [P] Browser DevTools Console open — note any red errors throughout (put them in the Issue Log)
+- [P] Browser DevTools Network tab open — watch for failed requests (red rows)
+- [NA] (Optional) `ADVISOR_MODEL=claude-opus-4-7` set if you want to exercise the advisor tool path (§8.14)
+- [NA] (Optional) `ANTHROPIC_MAX_CONCURRENCY`, `ANTHROPIC_MAX_RETRIES`, `ANTHROPIC_BASE_BACKOFF`, `ANTHROPIC_MAX_BACKOFF` left at defaults unless explicitly stress-testing rate-limit behaviour (§18.10–§18.12)
 
 **Test documents to prepare (place in a `uat/fixtures/` folder):**
 
-- [ ] A small PDF (~5 pages) — e.g. the Condensed Wealth of Nations
-- [ ] A medium PDF (~30–50 pages)
-- [ ] A large PDF (~150+ pages) — to stress the chunker + context meter
-- [ ] A `.docx` file
-- [ ] A `.txt` file
-- [ ] A `.md` file
-- [ ] An `.html` file
-- [ ] An **unsupported** file (e.g. `.xlsx` or `.png`) — for negative testing
-- [ ] A **corrupt** file (rename a random binary to `.pdf`) — for negative testing
+- [P] A small PDF (~5 pages) — e.g. the Condensed Wealth of Nations
+- [P] A medium PDF (~30–50 pages)
+- [P] A large PDF (~150+ pages) — to stress the chunker + context meter
+- [P] A `.docx` file
+- [P] A `.txt` file
+- [P] A `.md` file
+- [P] An `.html` file
+- [P] An **unsupported** file (e.g. `.xlsx` or `.png`): for negative testing
+- [ ] A **corrupt** file (rename a random binary to `.pdf`): for negative testing
 - [ ] A file with a **very long name** (>80 chars before the extension)
 - [ ] A file with **non-ASCII characters** in the name (e.g. `Réglementation_française.pdf`)
-- [ ] A **legal/regulatory document** containing section references (e.g. `Section 12(3)(a)`, `U.S.C. § 12`) — to exercise FTS5 safety (§22.10)
-- [ ] A document that produces **multiple subagent spawns** when summarised — required for §8.12 (interleaving fix)
+- [ ] A **legal/regulatory document** containing section references (e.g. `Section 12(3)(a)`, `U.S.C. § 12`): to exercise FTS5 safety (§22.10)
+- [ ] A document that produces **multiple subagent spawns** when summarised: required for §8.12 (interleaving fix)
 
 ---
 
 ## 1. Splash page (`/`)
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 1.1 | Splash page loads at `http://localhost:3000/` within 2s | [ ] |
 | 1.2 | "Constellation" title is visible and readable over the background | [ ] |
@@ -90,7 +90,7 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 ## 2. Home page (`/home`) — empty state
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 2.1 | Greeting matches time of day ("Good morning" / "Good afternoon" / "Good evening" / "Still up" if before 5am) | [ ] |
 | 2.2 | Subtitle "Ask a question or upload a document to begin." is visible | [ ] |
@@ -113,7 +113,7 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 ## 3. Home page — file upload (click)
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 3.1 | Clicking + → "Upload files" opens the OS file picker | [ ] |
 | 3.2 | Uploading a small PDF — "Ingesting…" spinner appears | [ ] |
@@ -131,7 +131,7 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 ## 4. Home page — drag-and-drop upload
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 4.1 | Dragging a file over the home page shows a blue dashed overlay with "Drop files to upload" | [ ] |
 | 4.2 | Dragging the file out of the window removes the overlay | [ ] |
@@ -162,7 +162,7 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable str
 
 ## 6. Home page — start chat
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 6.1 | With input filled + file attached, the **Send** (↑ or ➤) button is enabled | [ ] |
 | 6.2 | With empty input + no file, the Send button is disabled | [ ] |
@@ -176,7 +176,7 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable str
 
 ## 7. Session page — initial load after handoff
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 7.1 | Session page loads without a full page flash (no white flash) | [ ] |
 | 7.2 | URL query string (`?prompt=...`) is cleared after initial load | [ ] |
@@ -198,7 +198,7 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable str
 
 While the agents are working (before `finalize`):
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 8.1 | Thinking panel streams new text as agents progress (text grows over time) | [ ] |
 | 8.2 | Thinking panel auto-scrolls as new content arrives | [ ] |
@@ -221,7 +221,7 @@ While the agents are working (before `finalize`):
 
 These checks cover the typewriter + three-step artifact reveal contract introduced in v2.2 and refined in v2.3.3.
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 9.1 | When the Lead calls `finalize`, the final message begins **typing in letter-by-letter** (typewriter animation, server-paced via `text_delta` chunks) — the recap should not appear in one chunk | [ ] |
 | 9.2 | The typewriter speed feels natural — not instant, not sluggish (should take ~8–12s for a ~500-word recap) | [ ] |
@@ -245,7 +245,7 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 ## 10. Artifact Preview canvas
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 10.1 | Preview canvas slides in from the right (not a jump-cut) | [ ] |
 | 10.2 | Preview renders Markdown artifacts as formatted HTML (headings, bullets, tables) | [ ] |
@@ -265,7 +265,7 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 ## 11. Inline citations in the recap
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 11.1 | Citations in the assistant message appear as `[filename p.N]` (or `[filename §id]` for sectioned docs), **not** as raw `[uuid]` | [ ] |
 | 11.2 | Hovering a citation shows a tooltip with `View source — <filename> (p.N)` | [ ] |
@@ -282,7 +282,7 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 ## 12. Agent Trace panel
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 12.1 | Trace panel is collapsible (click header to expand/collapse) | [ ] |
 | 12.2 | Trace entries show a timestamp and an icon per event type | [ ] |
@@ -298,7 +298,7 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 ## 13. Chat sidebar
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 13.1 | Sidebar lists all sessions, most recent first | [ ] |
 | 13.2 | Active session is highlighted | [ ] |
@@ -321,7 +321,7 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 Test all three levels on the **same document + same question** to confirm the output meaningfully differs.
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 14.1 | Switching audience persists across reload (session detail endpoint saves it) | [ ] |
 | 14.2 | **Layperson** mode produces plainer language: short sentences (≤20 words), everyday verbs, no Latin / no statute numbers / no unexpanded acronyms | [ ] |
@@ -339,7 +339,7 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 ## 15. Retry & Edit
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 15.1 | Only the **last** assistant message shows a Retry button | [ ] |
 | 15.2 | Clicking Retry removes the current assistant reply and re-runs the user prompt | [ ] |
@@ -357,7 +357,7 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 ## 16. Context meter, token counter & compaction
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 16.1 | Context meter shows a percentage and a filled bar | [ ] |
 | 16.2 | **Meter is cumulative across turns** — it grows monotonically as the conversation lengthens (only dips on compaction). Does NOT reset to 5–10% on every new turn | [ ] |
@@ -379,7 +379,7 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 ## 17. In-session search
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 17.1 | Clicking the search icon in the input bar reveals a search field | [ ] |
 | 17.2 | Typing a query highlights matches in the messages (amber/yellow highlight) | [ ] |
@@ -396,7 +396,7 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 ## 18. Stop, cancellation & error handling
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 18.1 | Clicking **Stop** during streaming halts the run within ~2s | [ ] |
 | 18.2 | A "[stopped]" indicator appears on the partial reply | [ ] |
@@ -420,7 +420,7 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 After a full run completes, refresh the browser (Ctrl/Cmd+R):
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 19.1 | The user + assistant messages all reappear in order | [ ] |
 | 19.2 | Inline citations still clickable after reload | [ ] |
@@ -438,7 +438,7 @@ After a full run completes, refresh the browser (Ctrl/Cmd+R):
 
 ## 20. Multi-session behaviour & SSE re-attach
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 20.1 | Open session A, start a run, switch to session B mid-stream — B shows its own history correctly | [ ] |
 | 20.2 | Returning to A while the run is still in flight reattaches the SSE stream (uses `last_run_state == "running"`); the recap continues from where it was | [ ] |
@@ -452,7 +452,7 @@ After a full run completes, refresh the browser (Ctrl/Cmd+R):
 
 ## 21. File management within a session
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 21.1 | Session header's "files" menu lists all attached documents | [ ] |
 | 21.2 | Session header's files menu lists all generated artifacts | [ ] |
@@ -471,7 +471,7 @@ After a full run completes, refresh the browser (Ctrl/Cmd+R):
 
 These checks exercise the v2.3.1 hallucination hardening, the v2.3.3 retry-on-null, and today's post-2.3.3 hotfix for subagent interleaving.
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 22.1 | In the final recap, every citation resolves to a `[filename p.N]` label — no raw 36-char UUIDs leak into the final prose | [ ] |
 | 22.2 | In the Thinking panel, fully-formed `[uuid]` tokens render as `[filename p.N]` pills | [ ] |
@@ -488,7 +488,7 @@ These checks exercise the v2.3.1 hallucination hardening, the v2.3.3 retry-on-nu
 
 ## 23. Visual polish & accessibility
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 23.1 | All buttons have hover states (colour or background change) | [ ] |
 | 23.2 | All interactive elements show a pointer cursor | [ ] |
@@ -519,7 +519,7 @@ Repeat sections 1, 6, 9, and 22 in at least two browsers.
 
 ## 25. Negative / adversarial scenarios
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 25.1 | Submit a message while already streaming — the Send button should be disabled; nothing queues up incorrectly | [ ] |
 | 25.2 | Upload a 0-byte file — structured error, not a silent success | [ ] |
@@ -538,7 +538,7 @@ Repeat sections 1, 6, 9, and 22 in at least two browsers.
 
 ## 26. Backend API sanity (optional — requires `curl` / Postman)
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 26.1 | `GET http://localhost:8000/sessions` returns a JSON list | [ ] |
 | 26.2 | `GET http://localhost:8000/sessions/<id>` returns session detail with messages (each carrying `attached_document_ids` and `attached_documents`), documents, artifacts, and `last_run_state` | [ ] |
@@ -560,7 +560,7 @@ Repeat sections 1, 6, 9, and 22 in at least two browsers.
 
 These checks exercise the v2.3.3 conversation-history grounding and artifact catalogue. Run them **after** a successful first turn that produced an artifact.
 
-| # | Item | P / F / N/A |
+| # | Item | P / F / NA |
 |---|---|---|
 | 27.1 | Sending a follow-up like "extend point 3" / "expand on the second section" — the Lead references the prior recap content, not "I don't see any prior context" | [ ] |
 | 27.2 | Sending "convert that to CSV" — the Lead acknowledges the prior artifact by name and writes a new CSV artifact derived from it, not a hallucinated empty CSV | [ ] |

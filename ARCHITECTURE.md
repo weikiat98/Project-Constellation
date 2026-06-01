@@ -1,4 +1,4 @@
-# Architecture — Constellation
+# Architecture: Constellation
 
 ## Overview
 
@@ -191,7 +191,7 @@ Gated behind the `ADVISOR_MODEL` environment variable. When set (e.g. `claude-op
 - The Lead surfaces the advisor's text to the UI as a `thinking_delta` event prefixed with `[Advisor]` so the user sees the counsel live.
 - Advisor token usage is accumulated into the Lead's `tokens_in` / `tokens_out` via `response.usage.iterations` so accounting is complete.
 
-Leave `ADVISOR_MODEL` unset for strict cost control — the standard tool list is used and no advisor calls are made.
+Leave `ADVISOR_MODEL` unset for strict cost control: the standard tool list is used and no advisor calls are made.
 
 ---
 
@@ -250,7 +250,7 @@ Detects `Section X`, `Article Y`, `Clause Z`, `Schedule N`, `Annex A` patterns a
 
 ### No vector database
 
-This system is optimised for depth over breadth — analysing 1–5 known documents rather than searching a corpus. SQLite FTS5 (BM25) is sufficient for within-document keyword recall. A vector store (Phase B) is only warranted when a user needs semantic search across 50+ documents.
+This system is optimised for depth over breadth: analysing 1-5 known documents rather than searching a corpus. SQLite FTS5 (BM25) is sufficient for within-document keyword recall. A vector store (Phase B) is only warranted when a user needs semantic search across 50+ documents.
 
 ### Dynamic subagent topology
 

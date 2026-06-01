@@ -1,25 +1,25 @@
-# Constellation — Full-Stack Plan
+# Constellation: Full-Stack Plan
 
-> **Historical design document.** This plan was written before the 2.0 rewrite. Phase A is fully implemented and shipped (v2.0–v2.3). Phase B remains the forward roadmap. References to files removed in 2.0 (`librarian_agents_team.py`, `advanced_examples.py`, `test_example.py`) are preserved for historical context only.
+> **Historical design document.** This plan was written before the 2.0 rewrite. Phase A is fully implemented and shipped (v2.0-v2.3). Phase B remains the forward roadmap. References to files removed in 2.0 (`librarian_agents_team.py`, `advanced_examples.py`, `test_example.py`) are preserved for historical context only.
 
 ## Context
 
-The repo originally contained a CLI-only, synchronous Python prototype (`librarian_agents_team.py`, removed in 2.0) that orchestrated a Lead agent and three hardcoded SubAgents against Anthropic's Messages API. The goal was to evolve this into **Constellation**, a multi-agent document analysis assistant for lengthy, high-stakes documents — academic research papers, public policies, regulations, legal Acts, and compliance frameworks. That evolution is now complete.
+The repo originally contained a CLI-only, synchronous Python prototype (`librarian_agents_team.py`, removed in 2.0) that orchestrated a Lead agent and three hardcoded SubAgents against Anthropic's Messages API. The goal was to evolve this into **Constellation**, a multi-agent document analysis assistant for lengthy, high-stakes documents : academic research papers, public policies, regulations, legal Acts, and compliance frameworks. That evolution is now complete.
 
 ### Who this is for and what they need
 
-The target user is reading *a* document (or a small related set — e.g., an Act + its amendments + a guidance note), not searching across a vast corpus. The value is making dense, technical writing **understandable, navigable, and verifiable**:
+The target user is reading *a* document (or a small related set : e.g., an Act + its amendments + a guidance note), not searching across a vast corpus. The value is making dense, technical writing **understandable, navigable, and verifiable**:
 
-- **Understandable** — plain-language rewrites at adjustable expertise levels.
-- **Navigable** — cross-reference resolution, glossary lookup, jump-to-section.
-- **Verifiable** — every claim links back to its source span; no unverified paraphrase.
-- **Actionable** — extract obligations/findings into structured tables; compare versions.
+- **Understandable** : plain-language rewrites at adjustable expertise levels.
+- **Navigable** : cross-reference resolution, glossary lookup, jump-to-section.
+- **Verifiable** : every claim links back to its source span; no unverified paraphrase.
+- **Actionable** : extract obligations/findings into structured tables; compare versions.
 
-This is the **depth axis** of multi-agent document work, not the breadth/corpus axis. A typical session involves 1–5 documents, not 10,000. This framing drives every architectural choice below — notably, **no vector database is required for the core product**.
+This is the **depth axis** of multi-agent document work, not the breadth/corpus axis. A typical session involves 1–5 documents, not 10,000. This framing drives every architectural choice below : notably, **no vector database is required for the core product**.
 
 ### Why this is not (yet) a RAG system
 
-RAG — retrieval-augmented generation over a persistent, cross-session corpus — solves a different problem: "find relevant snippets across many documents." That's the breadth axis. This system is optimized for deep transformation of a known document. Retrieval becomes relevant only if and when a user says *"I have 50 regulations, find ones that say anything about X"* — at which point a dedicated phase adds it. Until then, building RAG infrastructure is premature.
+RAG : retrieval-augmented generation over a persistent, cross-session corpus : solves a different problem: "find relevant snippets across many documents." That's the breadth axis. This system is optimized for deep transformation of a known document. Retrieval becomes relevant only if and when a user says *"I have 50 regulations, find ones that say anything about X"* : at which point a dedicated phase adds it. Until then, building RAG infrastructure is premature.
 
 ### Confirmed design decisions
 
@@ -65,20 +65,20 @@ RAG — retrieval-augmented generation over a persistent, cross-session corpus �
 Follow Anthropic's **orchestrator-workers pattern** (docs: "Building effective agents"):
 
 - **LeadOrchestrator** runs an agent loop with **tool use**. Its tools:
-  - `spawn_subagent(role, task, context_refs)` — dispatches a subagent; returns a handle.
-  - `read_document_chunk(chunk_id)` — pulls from DocumentStore.
-  - `search_document(query)` — **within-document** keyword/BM25 lookup over chunks (SQLite FTS5). Scoped to the loaded document(s), not a global corpus.
-  - `resolve_reference(section_id)` — fetches an internally-cross-referenced section (e.g., "subject to Section 4(2)").
-  - `lookup_definition(term)` — fetches a defined term from the document's definitions section.
-  - `write_artifact(name, content)` — persists intermediate results (with source citations).
-  - `finalize(result)` — ends the session.
-- **SubAgents** are **not hardcoded roles** — the Lead writes a role description per spawn (e.g., "extract all obligations this regulation imposes on small businesses, with section reference and penalty"). Each subagent runs its own Messages API call with its own tools.
+  - `spawn_subagent(role, task, context_refs)` : dispatches a subagent; returns a handle.
+  - `read_document_chunk(chunk_id)` : pulls from DocumentStore.
+  - `search_document(query)` : **within-document** keyword/BM25 lookup over chunks (SQLite FTS5). Scoped to the loaded document(s), not a global corpus.
+  - `resolve_reference(section_id)` : fetches an internally-cross-referenced section (e.g., "subject to Section 4(2)").
+  - `lookup_definition(term)` : fetches a defined term from the document's definitions section.
+  - `write_artifact(name, content)` : persists intermediate results (with source citations).
+  - `finalize(result)` : ends the session.
+- **SubAgents** are **not hardcoded roles** : the Lead writes a role description per spawn (e.g., "extract all obligations this regulation imposes on small businesses, with section reference and penalty"). Each subagent runs its own Messages API call with its own tools.
 - **Parallelism**: `asyncio.gather` over spawned subagents. Lead waits, then synthesizes.
-- **Context isolation**: each subagent receives only the chunks it needs — keeps context windows small and costs down.
+- **Context isolation**: each subagent receives only the chunks it needs : keeps context windows small and costs down.
 - **Prompt caching**: cache document chunks (1h TTL, `cache_control: ephemeral`) so repeated subagent calls over the same document are cheap. Cache per-subagent system prompts too.
 - **Streaming**: `client.messages.stream()` on Lead and SubAgents; deltas pushed to the EventBus.
 - **Subagent cloning**: Lead can spawn N subagents with *identical* role + instructions but different tasks/chunk refs (e.g., 8 parallel summarizers, one per chunk range). Core win of dynamic topology over fixed roles.
-- **Per-agent context management**: every subagent is a fresh Messages call with an isolated window — system prompt (cached) + only the chunk IDs it needs. No cross-subagent history.
+- **Per-agent context management**: every subagent is a fresh Messages call with an isolated window : system prompt (cached) + only the chunk IDs it needs. No cross-subagent history.
 - **Lead-side compaction**: when Lead context crosses ~70% of the 200K window, compaction condenses older turns into a structured memory summary. Artifacts live in the DB and are referenced by ID, not re-embedded. Auto-trigger at 85%.
 - **Citation enforcement**: subagent system prompts require every factual claim to carry a source reference (chunk_id + section/page). The Lead rejects subagent output missing citations and respawns the task.
 
@@ -129,17 +129,17 @@ Follow Anthropic's **orchestrator-workers pattern** (docs: "Building effective a
 
 ### Critical backend files (new)
 
-- `backend/app.py` — FastAPI app + routes
-- `backend/orchestrator/lead.py` — LeadOrchestrator with tool loop
-- `backend/orchestrator/subagent.py` — SubAgent runner
-- `backend/orchestrator/tools.py` — tool definitions + handlers
-- `backend/orchestrator/event_bus.py` — in-process pub/sub for SSE
-- `backend/orchestrator/compactor.py` — Lead-context compaction pass
-- `backend/store/documents.py` — DocumentStore (wraps existing loader/chunker, adds FTS indexing)
-- `backend/store/sessions.py` — SQLite session persistence
-- `backend/extractors/definitions.py` — pull defined-term sections from uploaded doc
-- `backend/extractors/cross_refs.py` — detect "Section X", "Article Y" patterns
-- `backend/models.py` — pydantic schemas
+- `backend/app.py` : FastAPI app + routes
+- `backend/orchestrator/lead.py` : LeadOrchestrator with tool loop
+- `backend/orchestrator/subagent.py` : SubAgent runner
+- `backend/orchestrator/tools.py` : tool definitions + handlers
+- `backend/orchestrator/event_bus.py` : in-process pub/sub for SSE
+- `backend/orchestrator/compactor.py` : Lead-context compaction pass
+- `backend/store/documents.py` : DocumentStore (wraps existing loader/chunker, adds FTS indexing)
+- `backend/store/sessions.py` : SQLite session persistence
+- `backend/extractors/definitions.py` : pull defined-term sections from uploaded doc
+- `backend/extractors/cross_refs.py` : detect "Section X", "Article Y" patterns
+- `backend/models.py` : pydantic schemas
 
 Keep [document_loader.py](document_loader.py), [document_chunker.py](document_chunker.py) at repo root; import from `backend/`.
 
@@ -178,23 +178,23 @@ Three-pane layout:
 - **Transparency without noise**: trace panel is collapsible; default shows compact "3 agents working…" indicator.
 - **Artifacts**: tables, summaries, extracted obligation lists render inline with download buttons.
 - **Interruptibility**: Stop button cancels the run.
-- **Resume**: sessions persist — reload the page, pick up the history.
-- **Context meter**: header strip shows live Lead-context usage — `Context: 34% (68K / 200K)`. Color-coded (green < 70%, amber 70–90%, red > 90%). **Compact** button next to it.
+- **Resume**: sessions persist : reload the page, pick up the history.
+- **Context meter**: header strip shows live Lead-context usage : `Context: 34% (68K / 200K)`. Color-coded (green < 70%, amber 70–90%, red > 90%). **Compact** button next to it.
 
 ### Critical frontend files (new)
 
-- `frontend/app/layout.tsx` — root layout + theme
-- `frontend/app/sessions/[id]/page.tsx` — main chat view
+- `frontend/app/layout.tsx` : root layout + theme
+- `frontend/app/sessions/[id]/page.tsx` : main chat view
 - `frontend/components/ChatPane.tsx`
-- `frontend/components/AgentTrace.tsx` — renders SSE event tree
+- `frontend/components/AgentTrace.tsx` : renders SSE event tree
 - `frontend/components/UploadZone.tsx`
 - `frontend/components/ArtifactCard.tsx`
-- `frontend/components/CitationLink.tsx` — inline citation with drawer
-- `frontend/components/SourceDrawer.tsx` — shows original passage with highlight
-- `frontend/components/AudienceToggle.tsx` — layperson/professional/expert selector
-- `frontend/components/ContextMeter.tsx` — live token-usage bar + Compact button
-- `frontend/lib/sse.ts` — typed EventSource wrapper
-- `frontend/lib/api.ts` — fetch helpers
+- `frontend/components/CitationLink.tsx` : inline citation with drawer
+- `frontend/components/SourceDrawer.tsx` : shows original passage with highlight
+- `frontend/components/AudienceToggle.tsx` : layperson/professional/expert selector
+- `frontend/components/ContextMeter.tsx` : live token-usage bar + Compact button
+- `frontend/lib/sse.ts` : typed EventSource wrapper
+- `frontend/lib/api.ts` : fetch helpers
 
 ---
 
@@ -204,19 +204,19 @@ Three-pane layout:
 
 | Existing file | Action | Status |
 | --- | --- | --- |
-| [document_loader.py](document_loader.py) | **Keep**, import from backend | Done — at repo root, imported by `backend/store/documents.py` |
-| [document_chunker.py](document_chunker.py) | **Keep**, import from backend | Done — at repo root, imported by `backend/store/documents.py` |
+| [document_loader.py](document_loader.py) | **Keep**, import from backend | Done : at repo root, imported by `backend/store/documents.py` |
+| [document_chunker.py](document_chunker.py) | **Keep**, import from backend | Done : at repo root, imported by `backend/store/documents.py` |
 | `librarian_agents_team.py` | **Replaced** with async orchestrator | Removed in 2.0 |
-| [cli.py](cli.py) | **Keep**, repoint to new async orchestrator | Done — drives `run_lead` directly |
-| `advanced_examples.py`, `test_example.py` | Repurpose as integration tests | Removed in 2.0 (no replacement yet — see §14 of technical_docs.md) |
+| [cli.py](cli.py) | **Keep**, repoint to new async orchestrator | Done : drives `run_lead` directly |
+| `advanced_examples.py`, `test_example.py` | Repurpose as integration tests | Removed in 2.0 (no replacement yet : see §14 of technical_docs.md) |
 
 ---
 
 ## Implementation phases
 
-Phases are split into **Phase A (build now)** — the core Constellation product, sufficient as an end-state for the target use case — and **Phase B (build later, on-demand)** — additions triggered by specific user needs, not speculation.
+Phases are split into **Phase A (build now)** : the core Constellation product, sufficient as an end-state for the target use case : and **Phase B (build later, on-demand)** : additions triggered by specific user needs, not speculation.
 
-### Phase A — Build now (core Constellation)
+### Phase A : Build now (core Constellation)
 
 These phases deliver the complete value proposition for academic papers, policies, regulations, and compliance docs. Build in order; each produces a demoable deliverable.
 
@@ -256,38 +256,38 @@ Simple API key auth, rate limits, error surfaces, token-usage display, Stop/Resu
 
 At the end of Phase A, Constellation is a complete, useful product. **Most users will never need anything beyond this.**
 
-### Phase B — Build later, triggered by specific user needs
+### Phase B : Build later, triggered by specific user needs
 
 Do not build these speculatively. Each is triggered by an observed user request or bottleneck.
 
 **B1. Document comparison (trigger: "compare this Act with its amendment")**
-Load 2+ documents into one session; diff-aware subagent surfaces what changed, section by section. Mostly orchestration work — schema already supports multiple documents per session.
+Load 2+ documents into one session; diff-aware subagent surfaces what changed, section by section. Mostly orchestration work : schema already supports multiple documents per session.
 
 **B2. Structured-data uploads (trigger: user tries to upload xlsx/csv)**
 Add **DuckDB** alongside SQLite for tabular data. New tool: `query_tables(sql)`. Text-to-SQL subagent for natural-language queries over uploaded spreadsheets. Use case: compliance checklists, datasets referenced by a policy doc.
 
 **B3. Within-document semantic search (trigger: FTS5 keyword search misses relevant passages)**
-Add embeddings *per document* using `sqlite-vec`. Still no vector DB — embeddings live in the same SQLite file, scoped to one document. `search_document` becomes hybrid (BM25 + vector). Only needed if keyword recall proves insufficient in practice.
+Add embeddings *per document* using `sqlite-vec`. Still no vector DB : embeddings live in the same SQLite file, scoped to one document. `search_document` becomes hybrid (BM25 + vector). Only needed if keyword recall proves insufficient in practice.
 
 **B4. Cross-session document library (trigger: user says "I want to reuse documents I uploaded last week")**
-Decouple documents from sessions. Add a "library" view. Still no cross-document retrieval — just persistent per-document workspaces.
+Decouple documents from sessions. Add a "library" view. Still no cross-document retrieval : just persistent per-document workspaces.
 
 **B5. Cross-document retrieval / true RAG (trigger: user says "find which of my 50 regulations mention X")**
-Only at this point does RAG become relevant. Add a real vector store (pgvector on Postgres is the natural migration — collapses relational + vector + FTS into one system). New tool: `search_corpus(query)` with document-level filters. This is a **major** shift — migrate off SQLite, add ingestion pipeline, embedding job queue.
+Only at this point does RAG become relevant. Add a real vector store (pgvector on Postgres is the natural migration : collapses relational + vector + FTS into one system). New tool: `search_corpus(query)` with document-level filters. This is a **major** shift : migrate off SQLite, add ingestion pipeline, embedding job queue.
 
 **B6. Object storage / scale (trigger: local disk fills up or deployment needs multi-instance)**
 Move uploaded files to S3/MinIO. Add Redis for cache and SSE session state. Split DB from app tier.
 
 **B7. Advanced stores (trigger: specific features demand them)**
-- **Graph DB** — only if users need cross-document entity relationships ("which contracts reference Company X *and* Clause 4.2"). Most deployments never need this.
-- **Dedicated audit log** (ClickHouse, etc.) — only at compliance/enterprise scale.
+- **Graph DB** : only if users need cross-document entity relationships ("which contracts reference Company X *and* Clause 4.2"). Most deployments never need this.
+- **Dedicated audit log** (ClickHouse, etc.) : only at compliance/enterprise scale.
 
 ### What's deliberately excluded
 
-- **Multi-user / team features** — single-user tool until a real collaboration request emerges.
-- **Mobile app** — web frontend is sufficient; reading 200-page PDFs on mobile is not the workflow.
-- **Offline mode** — Anthropic API is required; no local LLM fallback planned.
-- **Vector DB on day one** — per the Context section, premature for the depth-axis use case.
+- **Multi-user / team features** : single-user tool until a real collaboration request emerges.
+- **Mobile app** : web frontend is sufficient; reading 200-page PDFs on mobile is not the workflow.
+- **Offline mode** : Anthropic API is required; no local LLM fallback planned.
+- **Vector DB on day one** : per the Context section, premature for the depth-axis use case.
 
 ---
 
@@ -298,10 +298,10 @@ Move uploaded files to S3/MinIO. Add Redis for cache and SSE session state. Spli
 - **Unit**: chunker + loader tests (already exist); add orchestrator tool-handler tests with a mocked Anthropic client; test citation-validation rejects uncited subagent output.
 - **Integration**: run a 200-page PDF (real policy or regulation) through the full stack; assert subagent spawn, parallel execution, final artifact, every claim has a valid citation.
 - **Manual E2E**: upload a real Act in the browser, ask "what obligations does this impose on small businesses," verify the returned table's citations each resolve to the correct sections when clicked.
-- **Audience levels**: same question answered at layperson/professional/expert — verify vocabulary and detail genuinely differ.
-- **Cache hit rate**: log `cache_read_input_tokens` — expect high hit rates on repeated subagent calls over the same document.
+- **Audience levels**: same question answered at layperson/professional/expert : verify vocabulary and detail genuinely differ.
+- **Cache hit rate**: log `cache_read_input_tokens` : expect high hit rates on repeated subagent calls over the same document.
 - **Load**: run two long documents concurrently in separate sessions; confirm no cross-session leakage and SSE streams stay distinct.
 
 ### Phase B verification (per feature, when built)
 
-Each Phase B feature ships with its own integration test proving the triggering user need is now served. No speculative test coverage — if the feature isn't built, the test isn't written.
+Each Phase B feature ships with its own integration test proving the triggering user need is now served. No speculative test coverage : if the feature isn't built, the test isn't written.

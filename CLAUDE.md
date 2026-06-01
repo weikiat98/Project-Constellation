@@ -1,8 +1,8 @@
-# CLAUDE.md — Constellation
+# CLAUDE.md: Constellation
 
 ## What this project is
 
-Constellation is a full-stack multi-agent system for deep analysis of single documents (legal Acts, regulations, academic papers, compliance frameworks). It is **not** a corpus search tool, it is optimised for depth on 1–5 known documents.
+Constellation is a full-stack multi-agent system for deep analysis of single documents (legal Acts, regulations, academic papers, compliance frameworks). It is **not** a corpus search tool, it is optimised for depth on 1-5 known documents.
 
 Current version: **2.3.3**. Stack: Next.js 15 + React 19 (frontend), FastAPI + aiosqlite (backend), Anthropic SDK (agent orchestration).
 
@@ -40,14 +40,14 @@ frontend/
     citations.ts          # Citation regex (single source of truth)
 document_loader.py        # Multi-format loader (PDF, DOCX, TXT, MD, HTML)
 document_chunker.py       # Intelligent chunker (pages → chapters → sections)
-cli.py                    # CLI — drives the same async orchestrator, no server needed
+cli.py                    # CLI: drives the same async orchestrator, no server needed
 ```
 
 ---
 
 ## Running the project
 
-**Always run from the repo root** — the project is a Python package and `uvicorn` must find `backend/` on `sys.path`.
+**Always run from the repo root**: the project is a Python package and `uvicorn` must find `backend/` on `sys.path`.
 
 ```bash
 # Backend
@@ -69,7 +69,7 @@ Required env var: `ANTHROPIC_API_KEY`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | — | Required |
+| `ANTHROPIC_API_KEY` | : | Required |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Overrides Lead, SubAgent, and Compactor |
 | `ADVISOR_MODEL` | *(empty)* | Set to `claude-opus-4-7` to enable the Advisor beta tool (max 3 uses/run) |
 | `NEXT_PUBLIC_SSE_BASE` | `http://<host>:8000` | Override SSE base URL |
@@ -92,7 +92,7 @@ Setting `ANTHROPIC_MODEL` overrides **all three**. For production, swap only the
 
 ## Key design constraints
 
-**SQLite only.** Single-user, local-first. WAL mode handles concurrent async reads. FTS5 is built in. `deep_reading.db` is the hard-coded filename — do not rename it without updating `DB_PATH` in `backend/store/sessions.py`.
+**SQLite only.** Single-user, local-first. WAL mode handles concurrent async reads. FTS5 is built in. `deep_reading.db` is the hard-coded filename: do not rename it without updating `DB_PATH` in `backend/store/sessions.py`.
 
 **No vector database.** FTS5 BM25 is sufficient for within-document keyword recall. Vector search (Phase B) is only warranted for semantic search across 50+ documents.
 
@@ -104,7 +104,7 @@ Setting `ANTHROPIC_MODEL` overrides **all three**. For production, swap only the
 
 **`last_run_state` lives on the session row, not in memory.** States: `idle | running | completed | error | cancelled`. The frontend reads this on session mount to decide whether to re-attach SSE. Do not use in-process state for this.
 
-**RAF-paced commit poll.** The frontend paces text reveal via `requestAnimationFrame`. On `run_complete`, a `commitPollId` interval waits for `pacingDone()` before calling `commit()`. Do not bypass this — committing early cuts off the visible typewriter effect.
+**RAF-paced commit poll.** The frontend paces text reveal via `requestAnimationFrame`. On `run_complete`, a `commitPollId` interval waits for `pacingDone()` before calling `commit()`. Do not bypass this: committing early cuts off the visible typewriter effect.
 
 ---
 
@@ -116,7 +116,7 @@ messages       (id, session_id, role, content, token_usage, thinking,
                 artifact_ids_json, attached_document_ids_json, created_at)
 documents      (id, session_id, filename, original_filename, chunk_count)
 chunks         (id, document_id, idx, content, metadata, section_id, page)
-chunks_fts     FTS5 virtual table — kept in sync with chunks via triggers
+chunks_fts     FTS5 virtual table: kept in sync with chunks via triggers
 definitions    (id, document_id, term, definition, source_chunk_id)
 cross_refs     (id, document_id, from_chunk_id, to_section_id)
 artifacts      (id, session_id, name, content, mime_type, citations_json)
@@ -171,10 +171,10 @@ All schemas are in `backend/orchestrator/tools.py`.
 | --- | --- | --- |
 | `ChatPane` | `frontend/components/ChatPane.tsx` | Streaming messages, citation parsing, artifact cards, composer, token counter |
 | `AgentTrace` | `frontend/components/AgentTrace.tsx` | Live/replayed event tree |
-| `CitationLink` | `frontend/components/CitationLink.tsx` | `[chunk_id]` badge → SourceDrawer; retries once after 2 s if chunk not yet committed |
+| `CitationLink` | `frontend/components/CitationLink.tsx` | `[chunk_id]` badge: SourceDrawer; retries once after 2 s if chunk not yet committed |
 | `SourceDrawer` | `frontend/components/SourceDrawer.tsx` | Slide-in raw chunk viewer (`GET /api/chunks/{id}`) |
 | `ArtifactPreview` | `frontend/components/ArtifactPreview.tsx` | Flex-row sibling canvas for MD/HTML/CSV/plain-text artifacts |
-| `ContextMeter` | `frontend/components/ContextMeter.tsx` | Receives `totalTokens`/`window` props from ChatPane — does not fetch independently |
+| `ContextMeter` | `frontend/components/ContextMeter.tsx` | Receives `totalTokens`/`window` props from ChatPane: does not fetch independently |
 | `TokenCounter` | `frontend/components/TokenCounter.tsx` | Pre-send estimate; base count cached per session, deltas computed locally |
 | `AudienceToggle` | `frontend/components/AudienceToggle.tsx` | Layperson / Professional / Expert |
 
@@ -192,17 +192,17 @@ All schemas are in `backend/orchestrator/tools.py`.
 
 ## Security notes
 
-- **FTS5 injection**: neutralised by `_fts5_safe` — every LLM-generated query is tokenised and quoted before reaching the FTS5 parser.
+- **FTS5 injection**: neutralised by `_fts5_safe`: every LLM-generated query is tokenised and quoted before reaching the FTS5 parser.
 - **File path safety**: uploads always go through `NamedTemporaryFile`; the original filename is carried as a separate argument and never used for disk I/O.
 - **CORS**: locked to `localhost:3000` and `127.0.0.1:3000`. Widen deliberately before any deployment.
 - **API key**: read from env; never logged, never sent to the frontend, never written to disk.
-- **Prompt injection**: documents may contain adversarial text. The Lead system prompt pins citation requirements; subagents are restricted to `read_document_chunk` only, so a successful injection can at most produce incorrect prose — it cannot exfiltrate data, execute code, or reach external services.
+- **Prompt injection**: documents may contain adversarial text. The Lead system prompt pins citation requirements; subagents are restricted to `read_document_chunk` only, so a successful injection can at most produce incorrect prose: it cannot exfiltrate data, execute code, or reach external services.
 
 ---
 
 ## Documentation notes
 
-- Never use "—" when writing documentations and ALWAYS use ": " instead, even for titles and headings.
+- Never use em-dashes when writing documentations and ALWAYS use ": " instead, even for titles and headings.
 - When working on a task, if there are side-findings discovered, document these side-findings in a markdown file known as OBSERVATIONS.md to track these findings to glance at later and decide what to do with, solving the bug-next-door problem.
 - When a task is completed, do a reflection and record reflections in a markdown file known as REFLECTIONS.md. Examples can be what are the surprise findings, what broke, what it’d do differently.
 

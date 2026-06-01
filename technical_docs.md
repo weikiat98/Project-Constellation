@@ -80,7 +80,7 @@ All routes are mounted under `/api`. Base URL defaults to `http://localhost:8000
 | POST | `/api/sessions/{id}/documents` | 201 | Multipart upload; ingests + chunks + indexes the file. |
 | DELETE | `/api/sessions/{id}/documents/{document_id}` | 200 / 404 / 409 | Remove a document from the session. **409** if the document is referenced by any persisted message's `attached_document_ids` (would orphan chip rendering on past turns). |
 | POST | `/api/sessions/{id}/messages` | 202 | Submit user prompt. Body: `{ content: string, audience: "layperson"\|"professional"\|"expert", attached_document_ids?: string[] }`. Document IDs are persisted on the message so chip rendering survives reloads. Kicks off the agent run. |
-| POST | `/api/sessions/{id}/cancel` | 200 | Signal the in-flight Lead run to stop at its next iteration. Sets the per-session `asyncio.Event` checked by the Lead loop; the run exits cleanly and `last_run_state` transitions to `cancelled`. Idempotent — returns `{ cancelled: false, reason: "no run in flight" }` if no run is active. |
+| POST | `/api/sessions/{id}/cancel` | 200 | Signal the in-flight Lead run to stop at its next iteration. Sets the per-session `asyncio.Event` checked by the Lead loop; the run exits cleanly and `last_run_state` transitions to `cancelled`. Idempotent : returns `{ cancelled: false, reason: "no run in flight" }` if no run is active. |
 | GET | `/api/sessions/{id}/stream` | 200 (SSE) | Server-Sent Events stream of agent events. |
 | GET | `/api/sessions/{id}/context` | 200 | Token usage estimate: `{ tokens, window, percent }`. Builds the full prompt overhead (rendered system prompt for the session's audience + tool definitions + doc index up to 50 chunks) so the value matches what a real run publishes in `context_usage` SSE events. Used to seed the context meter on session mount. |
 | POST | `/api/sessions/{id}/compact` | 200 | Manually trigger context compaction. |
@@ -96,11 +96,11 @@ CORS is configured to allow `http://localhost:3000` and `http://127.0.0.1:3000`.
 All request/response bodies are typed via Pydantic v2 models in [backend/models.py](backend/models.py). Key shapes:
 
 - `SessionCreate { title? }`
-- `SessionUpdate { title?, pinned?, audience? }` — audience is persisted on the session so reloads restore the user's last choice. (Note: `last_run_state` is set internally by `submit_message` and the `_run` finally block; it is not part of the public PATCH surface.)
-- `SessionOut { id, title, created_at, pinned, audience, last_run_state }` — `last_run_state` is one of `idle | running | completed | error | cancelled`; the frontend reads it on session mount to decide whether to re-attach the SSE stream. (`cancelled` is set by the `_run` task's `finally` block when the per-session `asyncio.Event` was set via `POST /cancel`.)
+- `SessionUpdate { title?, pinned?, audience? }` : audience is persisted on the session so reloads restore the user's last choice. (Note: `last_run_state` is set internally by `submit_message` and the `_run` finally block; it is not part of the public PATCH surface.)
+- `SessionOut { id, title, created_at, pinned, audience, last_run_state }` : `last_run_state` is one of `idle | running | completed | error | cancelled`; the frontend reads it on session mount to decide whether to re-attach the SSE stream. (`cancelled` is set by the `_run` task's `finally` block when the per-session `asyncio.Event` was set via `POST /cancel`.)
 - `SessionDetail { session, messages, documents, artifacts }`
-- `MessageCreate { content, audience, attached_document_ids[] }` — `attached_document_ids` records which documents were attached at send time so chips re-render correctly after reload.
-- `MessageOut { id, session_id, role, content, token_usage?, created_at, artifact_ids[], thinking?, attached_document_ids[], attached_documents[] }` — `attached_documents` is hydrated from the documents table to filenames so the frontend can render chips without a second lookup.
+- `MessageCreate { content, audience, attached_document_ids[] }` : `attached_document_ids` records which documents were attached at send time so chips re-render correctly after reload.
+- `MessageOut { id, session_id, role, content, token_usage?, created_at, artifact_ids[], thinking?, attached_document_ids[], attached_documents[] }` : `attached_documents` is hydrated from the documents table to filenames so the frontend can render chips without a second lookup.
 - `DocumentOut { id, session_id, filename, chunk_count, original_filename? }`
 - `ArtifactOut { id, session_id, name, content, mime_type, citations_json? }`
 - `ContextUsageOut { tokens, window, percent }`
@@ -114,14 +114,14 @@ The audience field is validated against `^(layperson|professional|expert)$` on b
 
 For a single user turn:
 
-1. `POST /api/sessions/{id}/messages` — persists the user message (with `attached_document_ids`) and auto-derives the session title if this is the first message.
+1. `POST /api/sessions/{id}/messages` : persists the user message (with `attached_document_ids`) and auto-derives the session title if this is the first message.
 2. `event_registry.ensure_live(session_id)` returns a fresh open bus (replacing any closed bus from a prior run).
 3. `next_trace_run_index(session_id)` allocates a sequential `run_index` for trace persistence.
-4. **`update_session(last_run_state="running")`** — the session row is flagged so any client that mounts the session page (or returns from another session) can detect the in-flight run and re-subscribe.
+4. **`update_session(last_run_state="running")`** : the session row is flagged so any client that mounts the session page (or returns from another session) can detect the in-flight run and re-subscribe.
 5. The server schedules `asyncio.create_task(_run())`, which calls `run_lead(...)` and, in `finally`, closes the bus and writes a terminal `last_run_state` of `completed` or `error`. The HTTP response returns immediately with 202.
 6. The browser opens `GET /api/sessions/{id}/stream` via `EventSource`. Events are delivered as `data: {json}\n\n` lines. The stream closes when `run_complete` or `error` fires.
 
-Idempotency is not implemented — double-submitting a message creates two runs. Clients should disable the send button while `isStreaming` is true (the frontend does).
+Idempotency is not implemented : double-submitting a message creates two runs. Clients should disable the send button while `isStreaming` is true (the frontend does).
 
 #### Multi-session SSE re-attach
 
@@ -226,7 +226,7 @@ Implemented in [backend/orchestrator/compactor.py](backend/orchestrator/compacto
 - Output replaces the compacted prefix with two synthetic messages: `[COMPACTED SESSION HISTORY]\n{summary}` (user) and `Understood. Continuing from the compacted history.` (assistant).
 - A `compaction_done` event with `before_tokens` and `after_tokens` is published, and the corresponding trace row is persisted.
 
-Token counting is approximated as `len(str) // 4` for speed — accurate enough for threshold detection.
+Token counting is approximated as `len(str) // 4` for speed : accurate enough for threshold detection.
 
 ### 3.6 Prompt caching
 
@@ -250,7 +250,7 @@ Gated behind the `ADVISOR_MODEL` environment variable. Unset (default): the Lead
 }
 ```
 
-Three uses per run is intentional — it maps to the three natural decision points: planning check, post-synthesis review, and pre-finalize quality gate. Raising `max_uses` burns advisor-model tokens without a clear payoff.
+Three uses per run is intentional : it maps to the three natural decision points: planning check, post-synthesis review, and pre-finalize quality gate. Raising `max_uses` burns advisor-model tokens without a clear payoff.
 
 **Surfacing advisor output.** Advisor inference runs server-side inside the same Messages call; the stream pauses silently during sub-inference. Results arrive as `advisor_tool_result` blocks in `response.content` after `stop_reason == "tool_use"`. The Lead loop inspects each block and emits its text as a `thinking_delta` event prefixed with `[Advisor]` so the user sees the advice live in the Thinking panel.
 
@@ -298,7 +298,7 @@ A subset of events is persisted to the `trace_events` table so the UI can replay
 
 Every run gets a monotonically increasing `run_index` (from `next_trace_run_index`). Within a run, events are numbered `seq = 0, 1, 2, …`. The frontend maps these to `TraceEntry` objects on session load via `persistedToTrace` in [frontend/app/sessions/[id]/page.tsx](frontend/app/sessions/%5Bid%5D/page.tsx).
 
-Persistence is best-effort — if `append_trace_event` raises, the error is swallowed so it can't crash a live run.
+Persistence is best-effort : if `append_trace_event` raises, the error is swallowed so it can't crash a live run.
 
 ---
 
@@ -355,9 +355,9 @@ LLM-generated search queries can contain FTS5 operators (`:`, `-`, `NEAR`, colum
 
 There is no migration framework. Lightweight inline migrations run in `_init_db` ([backend/store/sessions.py](backend/store/sessions.py)). Each is gated on a `PRAGMA table_info` check so re-running on an already-migrated DB is a no-op.
 
-- `sessions.pinned INTEGER DEFAULT 0` — added in 2.0.
-- `sessions.audience TEXT NOT NULL DEFAULT 'professional'` — added in 2.1.
-- `sessions.last_run_state TEXT NOT NULL DEFAULT 'idle'` — added in 2.2 to support multi-session SSE re-attach. Values: `idle | running | completed | error | cancelled`.
+- `sessions.pinned INTEGER DEFAULT 0` : added in 2.0.
+- `sessions.audience TEXT NOT NULL DEFAULT 'professional'` : added in 2.1.
+- `sessions.last_run_state TEXT NOT NULL DEFAULT 'idle'` : added in 2.2 to support multi-session SSE re-attach. Values: `idle | running | completed | error | cancelled`.
 - `documents.original_filename TEXT`: added in 2.0; backfilled from `filename`.
 - `messages.artifact_ids_json TEXT`: added in 2.0 for per-turn artifact linkage.
 - `messages.thinking TEXT`: added in 2.0 for persisted reasoning trace.
@@ -408,7 +408,7 @@ Both extractors are best-effort and run after ingest. A failure does not block t
 
 Managed with React `useState` hooks. Key pieces of state:
 
-- `session`, `messages`, `documents`, `artifacts` — hydrated from `GET /api/sessions/{id}`. Each `Message` carries `attached_documents` (resolved filenames), so the chip render is purely declarative.
+- `session`, `messages`, `documents`, `artifacts` : hydrated from `GET /api/sessions/{id}`. Each `Message` carries `attached_documents` (resolved filenames), so the chip render is purely declarative.
 - `traceEntries`: hydrated from `GET /api/sessions/{id}/trace` on mount, appended live from SSE events.
 - `streamingText`: the in-progress final answer during a run (replaced wholesale by `final_message`).
 - `thinkingText`: accumulated `thinking_delta` text.
@@ -416,7 +416,7 @@ Managed with React `useState` hooks. Key pieces of state:
 - `liveContextPercent`: seeded from `/context`, updated from `context_usage` events.
 - `drawerChunkId`, `previewArtifact`, `uploadOpen`, `editingTitle`, `titleDraft`: UI state.
 
-Refs (not state — don't trigger re-renders):
+Refs (not state : don't trigger re-renders):
 
 - `stopRef`: current `EventSource` unsubscriber (also cancels the pacing RAF and commit-poll interval via the closure assigned in `attachStream`). Cleared by `handleStop` and by the unmount effect so navigating between sessions doesn't leak connections.
 - `uploadCloseTimerRef`: debounces the upload zone auto-close.
@@ -426,7 +426,7 @@ Refs (not state — don't trigger re-renders):
 
 The post-`run_complete` flush is **not** held in a ref. It runs from a closure created inside `attachStream`, gated by either an immediate `pacingDone()` check or a `commitPollId` interval that polls until pacing catches up. See *Streaming strategy* below.
 
-`ChatMessage` was widened in 2.2 to include a transient `role: "system"` variant with `systemKind: "audience_change"`, rendered as a centred italic banner (`~ switched to layperson mode ~`). System messages are not persisted — they live in client state only and are emitted on explicit toggle clicks and on prompt-inferred audience switches.
+`ChatMessage` was widened in 2.2 to include a transient `role: "system"` variant with `systemKind: "audience_change"`, rendered as a centred italic banner (`~ switched to layperson mode ~`). System messages are not persisted : they live in client state only and are emitted on explicit toggle clicks and on prompt-inferred audience switches.
 
 `attachStream` in the session page is the single entry point for wiring `EventSource` events into state. Each run's artifacts are tracked in a local `runArtifactIds` array so the assistant message persisted at `run_complete` can carry just the files produced for that specific turn.
 
@@ -508,7 +508,7 @@ Outputs use stdout for the answer and stderr for progress so `python cli.py ... 
 
 | Knob | Where | Default | Notes |
 | --- | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | env | — | Required. |
+| `ANTHROPIC_API_KEY` | env | : | Required. |
 | `ANTHROPIC_MODEL` | env | `claude-sonnet-4-6` | Overrides Lead, SubAgent, and Compactor models. |
 | `ADVISOR_MODEL` | env | `""` *(disabled)* | Enables the Lead's Advisor tool (`advisor_20260301` beta). Set to a model ID (e.g. `claude-opus-4-7`) that is ≥ the executor in capability. Leave empty to disable. |
 | `NEXT_PUBLIC_SSE_BASE` | env (frontend) | `http://<host>:8000` | SSE base URL. |

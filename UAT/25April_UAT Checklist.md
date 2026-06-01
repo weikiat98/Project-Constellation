@@ -1,4 +1,4 @@
-# Constellation — UAT Checklist
+# Constellation : UAT Checklist
 
 **Version under test:** 2.1
 **Tester:** _______________
@@ -14,7 +14,7 @@
 1. Work through sections in order. Sections later in the doc assume you've completed the earlier ones (e.g. session-page checks assume a session exists).
 2. For each checklist item, mark one of:
    - **P** = Pass (behaved as described)
-   - **F** = Fail (did not behave as described — log in the Issue Log)
+   - **F** = Fail (did not behave as described : log in the Issue Log)
    - **NA** = Not applicable / couldn't test (note why in the Issue Log)
 3. Every **F** gets a row in the **Issue Log** at the bottom. Include the section + item number, what you saw, what you expected, and (if possible) reproduction steps + screenshot/video path.
 4. Submit this completed file back in one go so all issues can be addressed in a single pass.
@@ -27,19 +27,19 @@
 - [P] Frontend running on `http://localhost:3000` (`npm run dev` in `frontend/`)
 - [P] `ANTHROPIC_API_KEY` is set in the backend environment
 - [P] `deep_reading.db` file exists after first backend start
-- [P] Browser DevTools Console open — note any red errors throughout (put them in the Issue Log)
-- [P] Browser DevTools Network tab open — watch for failed requests (red rows)
+- [P] Browser DevTools Console open : note any red errors throughout (put them in the Issue Log)
+- [P] Browser DevTools Network tab open : watch for failed requests (red rows)
 
 **Test documents to prepare (place in a `uat/fixtures/` folder):**
-- [P] A small PDF (~5 pages) — e.g. the Condensed Wealth of Nations you used before
+- [P] A small PDF (~5 pages) : e.g. the Condensed Wealth of Nations you used before
 - [P] A medium PDF (~30–50 pages)
-- [P] A large PDF (~150+ pages) — to stress the chunker + context meter
+- [P] A large PDF (~150+ pages) : to stress the chunker + context meter
 - [P] A `.docx` file
 - [P] A `.txt` file
 - [P] A `.md` file
 - [P] An `.html` file
-- [P] An **unsupported** file (e.g. `.xlsx` or `.png`) — for negative testing
-- [NA] A **corrupt** file (rename a random binary to `.pdf`) — for negative testing
+- [P] An **unsupported** file (e.g. `.xlsx` or `.png`) : for negative testing
+- [NA] A **corrupt** file (rename a random binary to `.pdf`) : for negative testing
 - [NA] A file with a **very long name** (>80 chars before the extension)
 - [NA] A file with **non-ASCII characters** in the name (e.g. `Réglementation_française.pdf`)
 
@@ -65,7 +65,7 @@
 
 ---
 
-## 2. Home page (`/home`) — empty state
+## 2. Home page (`/home`) : empty state
 
 | # | Item | P / F / N/A |
 |---|---|---|
@@ -76,9 +76,9 @@
 | 2.5 | **Professional** is selected by default | [P] |
 | 2.6 | Clicking each audience option visibly highlights the chosen one | [P] |
 | 2.7 | Token counter displays `0 tokens` (or similar) when the input is empty | [P] |
-| 2.8 | Typing in the input — token counter updates within ~500ms after you stop typing | [P] |
+| 2.8 | Typing in the input : token counter updates within ~500ms after you stop typing | [P] |
 | 2.9 | Token count is roughly `prompt length / 4` before any upload (e.g. 100 chars ≈ 25 tokens) | [P] |
-| 2.10 | Left sidebar is visible and empty (no chats yet) — or shows prior sessions if the DB isn't fresh | [P] |
+| 2.10 | Left sidebar is visible and empty (no chats yet) : or shows prior sessions if the DB isn't fresh | [P] |
 | 2.11 | **+** button next to the input opens a popover with "Upload files" | [P] |
 | 2.12 | Clicking outside the popover closes it | [P] |
 | 2.13 | Pressing **Enter** on an empty input does nothing (does not submit) | [P] |
@@ -86,23 +86,23 @@
 
 ---
 
-## 3. Home page — file upload (click)
+## 3. Home page : file upload (click)
 
 | # | Item | P / F / N/A |
 |---|---|---|
 | 3.1 | Clicking + → "Upload files" opens the OS file picker | [P] |
-| 3.2 | Uploading a small PDF — "Ingesting…" spinner appears | [P] |
+| 3.2 | Uploading a small PDF : "Ingesting…" spinner appears | [P] |
 | 3.3 | After ingest, a chip with the filename + 📄 icon appears above the input | [P] |
 | 3.4 | "1 ready" indicator with a green checkmark appears | [P] |
 | 3.5 | Token counter updates to reflect the ingested document tokens (should jump substantially) | [P] |
-| 3.6 | Uploading a second file — a second chip appears | [P] |
+| 3.6 | Uploading a second file : a second chip appears | [P] |
 | 3.7 | Clicking the **×** on a chip removes that file from the pending list | [P] |
 | 3.8 | Filename in the chip is truncated if long (with full name on hover) | [P] |
 | 3.9 | A draft session appears in the left sidebar once the first upload succeeds | [P] |
 
 ---
 
-## 4. Home page — drag-and-drop upload
+## 4. Home page : drag-and-drop upload
 
 | # | Item | P / F / N/A |
 |---|---|---|
@@ -113,7 +113,7 @@
 
 ---
 
-## 5. Home page — file format coverage
+## 5. Home page : file format coverage
 
 Upload each file type. Confirm it produces a chip **or** surfaces a readable error.
 
@@ -124,15 +124,15 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable err
 | 5.3 | `.txt` | [✓] |
 | 5.4 | `.md` | [✓] |
 | 5.5 | `.html` | [✓] |
-| 5.6 | `.xlsx` or another unsupported type — should show a red error message | [✓] |
-| 5.7 | Corrupt `.pdf` (random bytes renamed) — should show a red error, not silently succeed | [NA] |
-| 5.8 | File with non-ASCII filename — chip displays the filename correctly | [NA] |
-| 5.9 | File with very long filename — chip truncates with ellipsis; full name on hover | [NA] |
-| 5.10 | Uploading a large PDF (~150 pages) — ingest completes in a reasonable time (note the duration: ___ s) | [✓] |
+| 5.6 | `.xlsx` or another unsupported type : should show a red error message | [✓] |
+| 5.7 | Corrupt `.pdf` (random bytes renamed) : should show a red error, not silently succeed | [NA] |
+| 5.8 | File with non-ASCII filename : chip displays the filename correctly | [NA] |
+| 5.9 | File with very long filename : chip truncates with ellipsis; full name on hover | [NA] |
+| 5.10 | Uploading a large PDF (~150 pages) : ingest completes in a reasonable time (note the duration: ___ s) | [✓] |
 
 ---
 
-## 6. Home page — start chat
+## 6. Home page : start chat
 
 | # | Item | P / F / N/A |
 |---|---|---|
@@ -145,7 +145,7 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable err
 
 ---
 
-## 7. Session page — initial load after handoff
+## 7. Session page : initial load after handoff
 
 | # | Item | P / F / N/A |
 |---|---|---|
@@ -161,7 +161,7 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable err
 
 ---
 
-## 8. Session page — active streaming run
+## 8. Session page : active streaming run
 
 While the agents are working (before `finalize`):
 
@@ -181,16 +181,16 @@ While the agents are working (before `finalize`):
 
 ---
 
-## 9. Session page — final output delivery (CRITICAL)
+## 9. Session page : final output delivery (CRITICAL)
 
-These checks cover the bugs fixed in the last round — verify the new flow works end-to-end.
+These checks cover the bugs fixed in the last round : verify the new flow works end-to-end.
 
 | # | Item | P / F / N/A |
 |---|---|---|
 | 9.1 | When the Lead calls `finalize`, the final message begins typing in letter-by-letter (typewriter animation) | [F] |
-| 9.2 | The typewriter speed feels natural — not instant, not sluggish (should take ~8–12s for a ~500-word recap) | [F] |
+| 9.2 | The typewriter speed feels natural : not instant, not sluggish (should take ~8–12s for a ~500-word recap) | [F] |
 | 9.3 | A blinking cursor ▋ appears at the end of the text while it's typing | [F] |
-| 9.4 | The thinking panel collapses (or its content clears) when the final message starts streaming — no duplication of the recap inside "Thinking…" | [P] |
+| 9.4 | The thinking panel collapses (or its content clears) when the final message starts streaming : no duplication of the recap inside "Thinking…" | [P] |
 | 9.5 | If an artifact was produced this turn, a **"Generated files"** section with a file button appears below the streaming text (while it's still typing, or just after) | [P] |
 | 9.6 | The file button shows the artifact name (e.g. "Adam Smith's Wealth of Nations: Key Concepts Summary") | [P] |
 | 9.7 | Clicking the file button opens the **Artifact Preview** canvas on the right side of the window | [P] |
@@ -244,7 +244,7 @@ These checks cover the bugs fixed in the last round — verify the new flow work
 | 12.5 | `artifact_written` rows show the artifact name | [P] |
 | 12.6 | `agent_done` rows show a summary | [F] |
 | 12.7 | `compaction_done` rows show before/after token counts | [NA] |
-| 12.8 | Trace survives a browser refresh (reload the page — events reappear) | [P] |
+| 12.8 | Trace survives a browser refresh (reload the page : events reappear) | [P] |
 | 12.9 | Trace survives switching to another session and back (no duplication) | [P] |
 
 ---
@@ -340,7 +340,7 @@ Test all three levels on the same document + same question to confirm the output
 | 18.2 | A "[stopped]" indicator appears on the partial reply | [P] |
 | 18.3 | After stop, input is re-enabled | [P] |
 | 18.4 | Killing the backend mid-stream surfaces a readable error (not a silent hang) | [NA] |
-| 18.5 | Disconnecting WiFi mid-stream — UI recovers gracefully after reconnect | [NA] |
+| 18.5 | Disconnecting WiFi mid-stream : UI recovers gracefully after reconnect | [NA] |
 | 18.6 | Sending a message with no document uploaded still works (or shows a helpful empty-state) | [P] |
 | 18.7 | Sending a nonsensical prompt ("asdfghjkl") still returns a reply without crashing | [P] |
 
@@ -368,9 +368,9 @@ After a full run completes, refresh the browser (Ctrl/Cmd+R):
 
 | # | Item | P / F / N/A |
 |---|---|---|
-| 20.1 | Open session A, start a run, switch to session B mid-stream — B shows its own history, A's stream continues in the background (or reattaches when you return) | [F] |
+| 20.1 | Open session A, start a run, switch to session B mid-stream : B shows its own history, A's stream continues in the background (or reattaches when you return) | [F] |
 | 20.2 | Returning to A shows the completed run (no duplicated messages) | [F] |
-| 20.3 | Starting a run in A then immediately in B — both complete and are stored under the right session | [F] |
+| 20.3 | Starting a run in A then immediately in B : both complete and are stored under the right session | [F] |
 | 20.4 | Uploading a file in A does not appear in B's session files | [P] |
 | 20.5 | Deleting A while B is streaming does not affect B | [P] |
 
@@ -422,20 +422,20 @@ Repeat sections 1, 6, and 9 in at least two browsers.
 
 | # | Item | P / F / N/A |
 |---|---|---|
-| 24.1 | Submit a message while already streaming — the Send button should be disabled; nothing queues up incorrectly | [P] |
-| 24.2 | Upload a 0-byte file — readable error, not a silent success | [NA] |
-| 24.3 | Upload a 100MB+ file — either accepted with a progress indicator, or rejected with a size-limit error | [P] |
-| 24.4 | Send a message containing `[uuid-like-string]` that isn't a real chunk — citation link click does not crash the drawer | [P] |
-| 24.5 | Rapid-click the Send button 5 times — only one request is issued | [P] |
-| 24.6 | Rapid-click Retry 3 times — only one retry runs | [P] |
-| 24.7 | Rename a session to empty string — falls back to the original title or is rejected | [P] |
-| 24.8 | Rename a session to a 500-character string — truncates in the UI, persists correctly | [P] |
-| 24.9 | Delete the last session — sidebar shows empty state, app does not crash | [P] |
-| 24.10 | Paste a very large block (~50KB) of text into the input — counter updates, UI doesn't freeze | [P] |
+| 24.1 | Submit a message while already streaming : the Send button should be disabled; nothing queues up incorrectly | [P] |
+| 24.2 | Upload a 0-byte file : readable error, not a silent success | [NA] |
+| 24.3 | Upload a 100MB+ file : either accepted with a progress indicator, or rejected with a size-limit error | [P] |
+| 24.4 | Send a message containing `[uuid-like-string]` that isn't a real chunk : citation link click does not crash the drawer | [P] |
+| 24.5 | Rapid-click the Send button 5 times : only one request is issued | [P] |
+| 24.6 | Rapid-click Retry 3 times : only one retry runs | [P] |
+| 24.7 | Rename a session to empty string : falls back to the original title or is rejected | [P] |
+| 24.8 | Rename a session to a 500-character string : truncates in the UI, persists correctly | [P] |
+| 24.9 | Delete the last session : sidebar shows empty state, app does not crash | [P] |
+| 24.10 | Paste a very large block (~50KB) of text into the input : counter updates, UI doesn't freeze | [P] |
 
 ---
 
-## 25. Backend API sanity (optional — requires `curl` / Postman)
+## 25. Backend API sanity (optional : requires `curl` / Postman)
 
 | # | Item | P / F / N/A |
 |---|---|---|
@@ -456,7 +456,7 @@ Repeat sections 1, 6, and 9 in at least two browsers.
 |---|---|---|---|---|---|---|
 | 1 | 7.4 |Attached document chips do not appear inside the user bubble unlike those in claude.ai or ChatGPT | Attached document chips appear inside the user bubble |upload file to messagr bar and sent to the agentic system. document chip did not appear though the file is stored in the session files tab |minor | |
 | 2 | 9.1 | When the lead calls finalize, the letter-by-letter typing is not visible on the frontend to the user. Only a final completed generated text is shown in 1 chunk| When the Lead calls `finalize`, the final message begins typing in letter-by-letter (typewriter animation) | upload file, send prompt: "summarise the document", wait for agentic system to generate|minor | |
-| 3 | 9.2 | Non-existent as outlined in item 9.1| The typewriter speed feels natural — not instant, not sluggish (should take ~8–12s for a ~500-word recap) | see item 9.1| minor| |
+| 3 | 9.2 | Non-existent as outlined in item 9.1| The typewriter speed feels natural : not instant, not sluggish (should take ~8–12s for a ~500-word recap) | see item 9.1| minor| |
 | 4 | 9.3 |The typewriting is non-existent as pointed our in section 9.2 | A blinking cursor ▋ appears at the end of the text while it's typing | see item 9.1| minor| |
 | 5 | 9.11 | non-existent as outlined in item 9.1| After streaming finishes, the blinking cursor disappears | see item 9.1|minor | |
 | 6 | 12.6 | the summary is partially cut off | `agent_done` rows show a summary | same reproduction steps for item 9.1 and click on agents_done under agent trace when it appears|minor | |
@@ -465,15 +465,15 @@ Repeat sections 1, 6, and 9 in at least two browsers.
 | 9 | 14.4 |same as item 14.2 | **Expert** mode produces technical / precise / domain-specific language |same as item 14.2 |major | |
 | 10 | 16.2 |context window percentage meter bar does not appear to be cumulative overtime. instead it shows a new context window percentage for every input message + thought process generated. Unsure if output is contributed part of it. | Meter updates as the run progresses |Upload file, send prompt to sumamrise the document and send follow-up prompts related to the first one | major| |
 | 11 | 19.9 | The thinking panel for past turns disappears | Thinking panel for past turns is collapsible but collapsed by default | |minor | |
-| 12 | 20.1 | Session A run was interupted. streaming did not continue after a few minutes after returning on the frontend | Open session A, start a run, switch to session B mid-stream — B shows its own history, A's stream continues in the background (or reattaches when you return) | | major| |
+| 12 | 20.1 | Session A run was interupted. streaming did not continue after a few minutes after returning on the frontend | Open session A, start a run, switch to session B mid-stream : B shows its own history, A's stream continues in the background (or reattaches when you return) | | major| |
 | 13 | 20.2 |switching different chat sessions during session A run appears to disrupt it, causing no output to be shown on the frontend | Returning to A shows the completed run (no duplicated messages) | |major | |
-| 14 | 20.3 |same issue raised for 20.1 and 20.2 | Starting a run in A then immediately in B — both complete and are stored under the right session | |major | |
+| 14 | 20.3 |same issue raised for 20.1 and 20.2 | Starting a run in A then immediately in B : both complete and are stored under the right session | |major | |
 
 ---
 
 ## Free-form observations
 
-> Anything that didn't fit the checklist — UX friction, unclear labels, surprising behaviour, performance impressions, copy suggestions.
+> Anything that didn't fit the checklist : UX friction, unclear labels, surprising behaviour, performance impressions, copy suggestions.
 
 - uploaded session files cannot be deleted or removed
 - switching layperson, professional and expert modes should appear in the chat interface as "~  switched to layperson mode ~" in the centre. 

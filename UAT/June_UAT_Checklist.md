@@ -2,7 +2,7 @@
 
 **Version under test:** 2.3.3 (+ post-2.3.3 thought-process citation fragment fix)
 **Tester:** _______________
-**Date:** _______ May 2026 ________
+**Date:** _______ June 2026 ________
 **Environment:** [ ] Local dev  [ ] Staging  [ ] Production
 **Backend model (`ANTHROPIC_MODEL`):** _______________
 **Advisor model (`ADVISOR_MODEL`, optional):** _______________

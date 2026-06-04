@@ -59,11 +59,11 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 - [P] A `.md` file
 - [P] An `.html` file
 - [P] An **unsupported** file (e.g. `.xlsx` or `.png`): for negative testing
-- [ ] A **corrupt** file (rename a random binary to `.pdf`): for negative testing
-- [ ] A file with a **very long name** (>80 chars before the extension)
-- [ ] A file with **non-ASCII characters** in the name (e.g. `Réglementation_française.pdf`)
-- [ ] A **legal/regulatory document** containing section references (e.g. `Section 12(3)(a)`, `U.S.C. § 12`): to exercise FTS5 safety (§22.10)
-- [ ] A document that produces **multiple subagent spawns** when summarised: required for §8.12 (interleaving fix)
+- [NA] A **corrupt** file (rename a random binary to `.pdf`): for negative testing
+- [NA] A file with a **very long name** (>80 chars before the extension)
+- [NA] A file with **non-ASCII characters** in the name (e.g. `Réglementation_française.pdf`)
+- [P] A **legal/regulatory document** containing section references (e.g. `Section 12(3)(a)`, `U.S.C. § 12`): to exercise FTS5 safety (§22.10)
+- [P] A document that produces **multiple subagent spawns** when summarised: required for §8.12 (interleaving fix)
 
 ---
 

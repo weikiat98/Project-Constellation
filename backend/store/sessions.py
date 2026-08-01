@@ -35,7 +35,7 @@ def _fts5_safe(query: str) -> str:
     tokens = [t for t in tokens if re.search(r"\w", t)]
     return " ".join(f'"{t}"' for t in tokens) if tokens else '""'
 
-DB_PATH = "deep_reading.db"
+DB_PATH = "Constellation.db"
 
 # ─── Schema ──────────────────────────────────────────────────────────────────
 

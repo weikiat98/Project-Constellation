@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [Unreleased] : 2026-08-01: Model version bump, database rename, and CVE/EOL script hardening
+
+### Changed
+
+- **Lead/SubAgent/Compactor default models bumped to Sonnet 5 / Opus 5** ([backend/orchestrator/lead.py](backend/orchestrator/lead.py)) : `MODEL` default changed from `claude-sonnet-4-6` to `claude-sonnet-5`, and the Advisor-tool example/comments changed from `claude-opus-4-7` to `claude-opus-5`. `README.md`, `technical_docs.md`, and `CLAUDE.md` updated to match.
+
+- **SQLite database renamed from `deep_reading.db` to `Constellation.db`** ([backend/store/sessions.py](backend/store/sessions.py) `DB_PATH`) : aligns the code with the `Constellation.db` file already present in the repo. `README.md`, `technical_docs.md`, and `CLAUDE.md` updated wherever the old filename was referenced.
+
+### Added
+
+- **`safety testing/CVE_scan.py` Step 5 : deprecation notice scanning** : auto-discovers every package from `requirements.txt` and `frontend/package.json`, then checks each one via `pip index versions` (flags yanked PyPI releases) and `npm show <package> deprecated` (surfaces the registry's deprecation message), covering the whole repo in a single run instead of per-package manual checks.
+
+- **`CVE_scan.py` EOL/EOS check now auto-detects runtime versions** : the Python version is read from `sys.version_info` and the Node.js version from `engines.node` in `package.json` (falling back to `node --version` on PATH), replacing the previous hardcoded `("python", "3.11")` / `("nodejs", "24")` list.
+
+### Notes
+
+- `UAT/June_UAT_Checklist.md` was renamed/re-dated to `UAT/Aug_UAT_Checklist.md` over the course of the 2.3.3 test cycle; cross-referenced against `safety testing/safetytests_reference.md` and logged coverage gaps in `OBSERVATIONS.md` (only 2 of 13 proposed adversarial test themes have UAT presence; the two other CRITICAL-severity themes, prompt injection and system-prompt extraction, have none).
+
+---
+
 ## [2.3.3] : 2026-05-07: Conversation continuity, token-meter accuracy, and streaming robustness
 
 ### Added

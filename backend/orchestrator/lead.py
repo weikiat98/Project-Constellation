@@ -37,19 +37,19 @@ from backend.orchestrator.compactor import maybe_compact, _count_tokens_approx
 from backend.orchestrator.event_bus import SessionEventBus
 from backend.orchestrator.rate_limit import retrying_stream
 
-# change to claude-opus-4-6 for production and use claude-sonnet-4-6 for testing. 
-# claude-haiku-4-5-20251001 is cost-effective for development but might face issue distinguishing different target audience 
-# (layperson/professional/expert) due to its smaller context window and lower capacity, which can lead to audience-inappropriate 
+# change to claude-opus-5 for production and use claude-sonnet-5 for testing.
+# claude-haiku-4-5-20251001 is cost-effective for development but might face issue distinguishing different target audience
+# (layperson/professional/expert) due to its smaller context window and lower capacity, which can lead to audience-inappropriate
 # responses. If you see the model struggling with register or missing citations, switch to a more capable model.
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6") 
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 WINDOW = 200_000
 
 # Advisor model — set to empty string to disable the advisor tool entirely
 # (useful for testing or strict cost control). When enabled, the Lead executor
 # consults this model up to 3 times per run: during planning, after subagent
 # synthesis, and before finalize.
-# Valid advisor model: claude-opus-4-7 (must be >= capability of executor).
-ADVISOR_MODEL = os.environ.get("ADVISOR_MODEL", "") # set to "claude-opus-4-7" to enable the advisor tool, or "" to disable it
+# Valid advisor model: claude-opus-5 (must be >= capability of executor).
+ADVISOR_MODEL = os.environ.get("ADVISOR_MODEL", "") # set to "claude-opus-5" to enable the advisor tool, or "" to disable it
 
 _LEAD_SYSTEM = """You are the Lead Orchestrator of Constellation, a multi-agent document analysis assistant.
 
@@ -511,11 +511,11 @@ async def run_lead(
     # client depending on whether the advisor tool is active.
     _system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
     # Adaptive thinking: Claude decides when/how much to reason based on
-    # request complexity. Supported on claude-sonnet-4-6 and claude-opus-4-7.
+    # request complexity. Supported on claude-sonnet-5 and claude-opus-5.
     # Interleaved thinking is automatically enabled, so Claude can reason
     # between tool calls — ideal for multi-step agentic workflows.
     _thinking: dict | None = (
-        {"type": "adaptive"} if MODEL in ("claude-sonnet-4-6", "claude-opus-4-7") else None
+        {"type": "adaptive"} if MODEL in ("claude-sonnet-5", "claude-opus-5") else None
     )
     _common: dict = dict(model=MODEL, max_tokens=64000, system=_system, tools=tools)
     if _thinking:

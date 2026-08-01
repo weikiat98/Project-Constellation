@@ -52,7 +52,7 @@ Constellation is a three-tier application:
 2. **Backend**: FastAPI running on `uvicorn`, exposing REST + Server-Sent Events (SSE). All I/O is async; SQLite access goes through `aiosqlite`.
 3. **Agent orchestration**: an async orchestrator-workers pattern built on the Anthropic SDK. A Lead agent (Sonnet by default, Opus for production) plans, calls tools, and spawns SubAgents (Haiku) that run in parallel via `asyncio.gather`.
 
-All persistent state lives in a single SQLite file (`deep_reading.db`) using WAL mode. An FTS5 virtual table backs keyword search. No external services are required beyond the Anthropic API.
+All persistent state lives in a single SQLite file (`Constellation.db`) using WAL mode. An FTS5 virtual table backs keyword search. No external services are required beyond the Anthropic API.
 
 ---
 
@@ -144,7 +144,7 @@ Defined in [backend/orchestrator/lead.py](backend/orchestrator/lead.py). The Lea
 - **Max tokens per call**: 64,000.
 - **Tools available**: `search_document`, `read_document_chunk`, `resolve_reference`, `lookup_definition`, `spawn_subagent`, `write_artifact`, `finalize`.
 - **System prompt**: rendered by `build_system_prompt(audience)` (exported for use by token-counting endpoints). Augmented with the selected audience instruction and marked `cache_control: { type: "ephemeral" }` to enable prompt caching with a 1-hour TTL.
-- **Adaptive thinking**: when the configured `MODEL` is `claude-sonnet-4-6` or `claude-opus-4-7`, the Messages call passes `thinking={"type": "adaptive"}` so Claude decides per-request whether (and how much) to reason. Interleaved thinking is automatically enabled, so the model can reason between tool calls - important for multi-step agentic flows. Thinking blocks arrive as `thinking_delta` SSE events and are surfaced in the collapsible "Thinking" panel. Models that don't support adaptive thinking (e.g. Haiku) silently fall through with no `thinking` field on the request.
+- **Adaptive thinking**: when the configured `MODEL` is `claude-sonnet-5` or `claude-opus-5`, the Messages call passes `thinking={"type": "adaptive"}` so Claude decides per-request whether (and how much) to reason. Interleaved thinking is automatically enabled, so the model can reason between tool calls - important for multi-step agentic flows. Thinking blocks arrive as `thinking_delta` SSE events and are surfaced in the collapsible "Thinking" panel. Models that don't support adaptive thinking (e.g. Haiku) silently fall through with no `thinking` field on the request.
 - **Initial user content**: optionally preceded by prior chat history (see below), then a doc-index block (up to 50 chunks), an artifact catalogue (see below), and the user's question.
 
 **Conversation history replay.** Prior persisted user/assistant turns are prepended to the `messages` array before each run. Tool-use blocks are excluded - the recap text already references artifacts by name and chunks by UUID. Without this, follow-up prompts ("convert that to CSV", "extend point 3") produced hallucinated chunk IDs because the model had no memory of what it wrote in previous turns.
@@ -237,7 +237,7 @@ Both the Lead and SubAgent system prompts carry `cache_control: { type: "ephemer
 
 ### 3.7 Advisor tool (optional)
 
-Gated behind the `ADVISOR_MODEL` environment variable. Unset (default): the Lead runs with the standard `LEAD_TOOLS` list via `client.messages.stream(...)`. Set to a model ID (e.g. `claude-opus-4-7`): `_build_tools(use_advisor=True)` in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) appends an `advisor_20260301` beta tool to the toolset and the call is routed through `client.beta.messages.stream(...)` with the `advisor-tool-2026-03-01` beta header.
+Gated behind the `ADVISOR_MODEL` environment variable. Unset (default): the Lead runs with the standard `LEAD_TOOLS` list via `client.messages.stream(...)`. Set to a model ID (e.g. `claude-opus-5`): `_build_tools(use_advisor=True)` in [backend/orchestrator/lead.py](backend/orchestrator/lead.py) appends an `advisor_20260301` beta tool to the toolset and the call is routed through `client.beta.messages.stream(...)` with the `advisor-tool-2026-03-01` beta header.
 
 **Tool spec.**
 
@@ -509,8 +509,8 @@ Outputs use stdout for the answer and stderr for progress so `python cli.py ... 
 | Knob | Where | Default | Notes |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | env | : | Required. |
-| `ANTHROPIC_MODEL` | env | `claude-sonnet-4-6` | Overrides Lead, SubAgent, and Compactor models. |
-| `ADVISOR_MODEL` | env | `""` *(disabled)* | Enables the Lead's Advisor tool (`advisor_20260301` beta). Set to a model ID (e.g. `claude-opus-4-7`) that is ≥ the executor in capability. Leave empty to disable. |
+| `ANTHROPIC_MODEL` | env | `claude-sonnet-5` | Overrides Lead, SubAgent, and Compactor models. |
+| `ADVISOR_MODEL` | env | `""` *(disabled)* | Enables the Lead's Advisor tool (`advisor_20260301` beta). Set to a model ID (e.g. `claude-opus-5`) that is ≥ the executor in capability. Leave empty to disable. |
 | `NEXT_PUBLIC_SSE_BASE` | env (frontend) | `http://<host>:8000` | SSE base URL. |
 | Context window | `compactor.WINDOW` | 200,000 | Set to match the deployed model's window. |
 | Compaction threshold | `compactor.COMPACT_THRESHOLD` | 0.85 | Fraction of window that triggers compaction. |
@@ -520,7 +520,7 @@ Outputs use stdout for the answer and stderr for progress so `python cli.py ... 
 | Lead max_tokens | `lead.py` | 64,000 | Per call. |
 | SubAgent max_tokens | `subagent.py` | 10,000 | Per call. |
 
-The database path is hard-coded to `deep_reading.db` in [backend/store/sessions.py](backend/store/sessions.py) (`DB_PATH`). Change the working directory to use a different file.
+The database path is hard-coded to `Constellation.db` in [backend/store/sessions.py](backend/store/sessions.py) (`DB_PATH`). Change the working directory to use a different file.
 
 ---
 

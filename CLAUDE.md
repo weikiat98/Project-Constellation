@@ -212,4 +212,4 @@ All schemas are in `backend/orchestrator/tools.py`.
 - [README.md](README.md): User Guide Manual.
 - [technical_docs.md](technical_docs.md): full API reference, SSE protocol, schema, orchestration internals, extension points
 - [CHANGELOG.md](CHANGELOG.md): version history (Keep a Changelog format)
-- [TO-DO.md](TO-DO.md): Tasks items to do.
+- [TODO.md](TO-DO.md): Tasks items to do.

@@ -114,7 +114,7 @@ The system uses two Claude models deliberately for a cost/quality tradeoff:
 
 | Role | Default model | Rationale |
 | --- | --- | --- |
-| Lead Orchestrator (`lead.py`) | `claude-sonnet-4-6` *(dev default)* / `claude-opus-4-6` *(production)* | Reasoning, tool-use orchestration, synthesis. Sonnet is the development default as of 2.3; swap to Opus for production-grade answers. |
+| Lead Orchestrator (`lead.py`) | `claude-sonnet-5` *(dev default)* / `claude-opus-5` *(production)* | Reasoning, tool-use orchestration, synthesis. Sonnet is the development default as of 2.3; swap to Opus for production-grade answers. |
 | SubAgents (`subagent.py`) | `claude-haiku-4-5-20251001` | Fast and cheap; each subagent does a narrow, citation-bounded task. |
 | Compactor (`compactor.py`) | `claude-haiku-4-5-20251001` | Context summarisation. no complex reasoning needed. |
 

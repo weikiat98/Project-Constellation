@@ -2,7 +2,7 @@
 
 ## What this project is
 
-Constellation is a full-stack multi-agent system for deep analysis of single documents (legal Acts, regulations, academic papers, compliance frameworks). It is **not** a corpus search tool, it is optimised for depth on 1-5 known documents.
+Constellation is a full-stack multi-agent system for deep analysis of technical documents (legal Acts, regulations, academic papers, compliance frameworks). It is **not** a corpus search tool, it is optimised for depth on 1-5 known documents using Anthropic documentation.
 
 Current version: **2.3.3**. Stack: Next.js 15 + React 19 (frontend), FastAPI + aiosqlite (backend), Anthropic SDK (agent orchestration).
 
@@ -82,7 +82,7 @@ Required env var: `ANTHROPIC_API_KEY`.
 
 | Role | Default model | Override |
 | --- | --- | --- |
-| Lead Orchestrator | `claude-sonnet-4-6` (dev) / `claude-opus-4-6` (prod) | `ANTHROPIC_MODEL` or edit `lead.py` |
+| Lead Orchestrator | `claude-sonnet-5` (dev) / `claude-opus-5` (prod) | `ANTHROPIC_MODEL` or edit `lead.py` |
 | SubAgents | `claude-haiku-4-5-20251001` | `ANTHROPIC_MODEL` |
 | Compactor | `claude-haiku-4-5-20251001` | `ANTHROPIC_MODEL` |
 

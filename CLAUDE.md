@@ -70,8 +70,8 @@ Required env var: `ANTHROPIC_API_KEY`.
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | : | Required |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Overrides Lead, SubAgent, and Compactor |
-| `ADVISOR_MODEL` | *(empty)* | Set to `claude-opus-4-7` to enable the Advisor beta tool (max 3 uses/run) |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Overrides Lead, SubAgent, and Compactor |
+| `ADVISOR_MODEL` | *(empty)* | Set to `claude-opus-5` to enable the Advisor beta tool (max 3 uses/run) |
 | `NEXT_PUBLIC_SSE_BASE` | `http://<host>:8000` | Override SSE base URL |
 | `ANTHROPIC_MAX_CONCURRENCY` | `3` | Semaphore cap on simultaneous Anthropic streams |
 | `ANTHROPIC_MAX_RETRIES` | `5` | Retry attempts for rate-limit / transient errors |
@@ -92,7 +92,7 @@ Setting `ANTHROPIC_MODEL` overrides **all three**. For production, swap only the
 
 ## Key design constraints
 
-**SQLite only.** Single-user, local-first. WAL mode handles concurrent async reads. FTS5 is built in. `deep_reading.db` is the hard-coded filename: do not rename it without updating `DB_PATH` in `backend/store/sessions.py`.
+**SQLite only.** Single-user, local-first. WAL mode handles concurrent async reads. FTS5 is built in. `Constellation.db` is the hard-coded filename: do not rename it without updating `DB_PATH` in `backend/store/sessions.py`.
 
 **No vector database.** FTS5 BM25 is sufficient for within-document keyword recall. Vector search (Phase B) is only warranted for semantic search across 50+ documents.
 
@@ -212,3 +212,4 @@ All schemas are in `backend/orchestrator/tools.py`.
 - [README.md](README.md): User Guide Manual.
 - [technical_docs.md](technical_docs.md): full API reference, SSE protocol, schema, orchestration internals, extension points
 - [CHANGELOG.md](CHANGELOG.md): version history (Keep a Changelog format)
+- [TO-DO.md](TO-DO.md): Tasks items to do.

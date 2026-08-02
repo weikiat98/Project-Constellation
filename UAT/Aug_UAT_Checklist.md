@@ -42,11 +42,11 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 - [P] Backend running on `http://localhost:8000` (`uvicorn backend.app:app --reload --port 8000`)
 - [P] Frontend running on `http://localhost:3000` (`npm run dev` in `frontend/`)
 - [P] `ANTHROPIC_API_KEY` is set in the backend environment
-- [P] `deep_reading.db` file exists after first backend start
+- [P] `Constellation.db` file exists after first backend start
 - [P] On first start, backend logs show **no errors** for the two `ALTER TABLE` migrations (`last_run_state`, `attached_document_ids_json`)
 - [P] Browser DevTools Console open : note any red errors throughout (put them in the Issue Log)
 - [P] Browser DevTools Network tab open : watch for failed requests (red rows)
-- [NA] (Optional) `ADVISOR_MODEL=claude-opus-4-7` set if you want to exercise the advisor tool path (§8.14)
+- [NA] (Optional) `ADVISOR_MODEL=claude-opus-5` set if you want to exercise the advisor tool path (§8.14)
 - [NA] (Optional) `ANTHROPIC_MAX_CONCURRENCY`, `ANTHROPIC_MAX_RETRIES`, `ANTHROPIC_BASE_BACKOFF`, `ANTHROPIC_MAX_BACKOFF` left at defaults unless explicitly stress-testing rate-limit behaviour (§18.10–§18.12)
 
 **Test documents to prepare (place in a `uat/fixtures/` folder):**
@@ -71,20 +71,20 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 1.1 | Splash page loads at `http://localhost:3000/` within 2s | [ ] |
-| 1.2 | "Constellation" title is visible and readable over the background | [ ] |
-| 1.3 | Subtitle paragraph is visible and readable | [ ] |
-| 1.4 | Background image is visible (not black / not broken image) | [ ] |
-| 1.5 | Background crossfades to a new image roughly every 6 seconds | [ ] |
-| 1.6 | Crossfade is smooth (no flash of black / no jump cut) | [ ] |
-| 1.7 | All 6 slide images load without broken-image icons (check DevTools → Network) | [ ] |
-| 1.8 | **START** button is visible, centred, and large | [ ] |
-| 1.9 | START button uses the white-on-dark palette (not the old blue) | [ ] |
-| 1.10 | Clicking **START** navigates to `/home` | [ ] |
-| 1.11 | Resizing the browser (narrow → wide) keeps the layout intact | [ ] |
-| 1.12 | Page works on a ≥1280px wide window | [ ] |
-| 1.13 | Page works on a narrow (~768px, tablet-size) window | [ ] |
-| 1.14 | Page works on a phone-width (~375px) window | [ ] |
+| 1.1 | Splash page loads at `http://localhost:3000/` within 2s | [P] |
+| 1.2 | "Constellation" title is visible and readable over the background | [P] |
+| 1.3 | Subtitle paragraph "Multi-agentic analysis..." is visible and readable | [P] |
+| 1.4 | Background image is visible (not black / not broken image) | [P] |
+| 1.5 | Background crossfades to a new image roughly every 6 seconds | [P] |
+| 1.6 | Crossfade is smooth (no flash of black / no jump cut) | [P] |
+| 1.7 | All 6 slide images load without broken-image icons (check DevTools → Network) | [P] |
+| 1.8 | **START** button is visible, centred, and large | [P] |
+| 1.9 | START button uses the white-on-dark palette (not the old blue) | [P] |
+| 1.10 | Clicking **START** navigates to `/home` | [P] |
+| 1.11 | Resizing the browser (narrow → wide) keeps the layout intact | [P] |
+| 1.12 | Page works on a ≥1280px wide window | [P] |
+| 1.13 | Page works on a narrow (~768px, tablet-size) window | [P] |
+| 1.14 | Page works on a phone-width (~375px) window | [P] |
 
 ---
 
@@ -92,22 +92,22 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 2.1 | Greeting matches time of day ("Good morning" / "Good afternoon" / "Good evening" / "Still up" if before 5am) | [ ] |
-| 2.2 | Subtitle "Ask a question or upload a document to begin." is visible | [ ] |
-| 2.3 | Prompt bar is visible below the greeting (roughly 30% down the viewport) | [ ] |
-| 2.4 | Audience toggle at the top shows 3 options: **Layperson / Professional / Expert** | [ ] |
-| 2.5 | **Professional** is selected by default for a fresh visit | [ ] |
-| 2.6 | Clicking each audience option visibly highlights the chosen one (white background, slate-900 text) | [ ] |
-| 2.7 | Token counter displays `0 tokens` (or similar) when the input is empty | [ ] |
-| 2.8 | Typing in the input : token counter updates within ~800ms after you stop typing | [ ] |
-| 2.9 | Token count is roughly `prompt length / 4` before any upload (e.g. 100 chars ≈ 25 tokens) | [ ] |
-| 2.10 | Left sidebar is visible : empty or showing prior sessions from the DB | [ ] |
-| 2.11 | **+** button next to the input opens a popover with "Upload files" | [ ] |
-| 2.12 | Clicking outside the popover closes it | [ ] |
-| 2.13 | Pressing **Enter** on an empty input does nothing (does not submit) | [ ] |
-| 2.14 | Pressing **Shift+Enter** on the input inserts a newline | [ ] |
-| 2.15 | **+ New chat** button in the sidebar uses the white-on-dark palette | [ ] |
-| 2.16 | Send button on the home prompt bar uses the white-on-dark palette | [ ] |
+| 2.1 | Greeting matches time of day ("Good morning" / "Good afternoon" / "Good evening" / "Still up" if before 5am) | [P] |
+| 2.2 | Subtitle "Ask a question or upload a document to begin." is visible | [P] |
+| 2.3 | Prompt bar is visible below the greeting (roughly 30% down the viewport) | [P] |
+| 2.4 | Audience toggle at the top shows 3 options: **Layperson / Professional / Expert** | [P] |
+| 2.5 | **Professional** is selected by default for a fresh visit | [P] |
+| 2.6 | Clicking each audience option visibly highlights the chosen one (white background, slate-900 text) | [P] |
+| 2.7 | Token counter displays `0 tokens` (or similar) when the input is empty | [P] |
+| 2.8 | Typing in the input : token counter updates within ~800ms after you stop typing | [P] |
+| 2.9 | Token count is roughly `prompt length / 4` before any upload (e.g. 100 chars ≈ 25 tokens) | [P] |
+| 2.10 | Left sidebar is visible : empty or showing prior sessions from the DB | [P] |
+| 2.11 | **+** button next to the input opens a popover with "Upload files" | [P] |
+| 2.12 | Clicking outside the popover closes it | [P] |
+| 2.13 | Pressing **Enter** on an empty input does nothing (does not submit) | [P] |
+| 2.14 | Pressing **Shift+Enter** on the input inserts a newline | [P] |
+| 2.15 | **+ New chat** button in the sidebar uses the white-on-dark palette | [P] |
+| 2.16 | Send button on the home prompt bar uses the white-on-dark palette | [P] |
 
 ---
 
@@ -115,15 +115,15 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 3.1 | Clicking + → "Upload files" opens the OS file picker | [ ] |
-| 3.2 | Uploading a small PDF : "Ingesting…" spinner appears | [ ] |
-| 3.3 | After ingest, a chip with the filename + 📄 icon appears above the input | [ ] |
-| 3.4 | "1 ready" indicator with a green checkmark appears | [ ] |
-| 3.5 | Token counter updates to reflect the ingested document tokens (should jump substantially) | [ ] |
-| 3.6 | Uploading a second file : a second chip appears | [ ] |
-| 3.7 | Clicking the **×** on a chip removes that file from the pending list | [ ] |
-| 3.8 | Filename in the chip is truncated if long (with full name on hover) | [ ] |
-| 3.9 | A draft session appears in the left sidebar once the first upload succeeds | [ ] |
+| 3.1 | Clicking + → "Upload files" opens the OS file picker | [P] |
+| 3.2 | Uploading a small PDF : "Ingesting…" spinner appears | [P] |
+| 3.3 | After ingest, a chip with the filename + 📄 icon appears above the input | [P] |
+| 3.4 | "1 ready" indicator with a green checkmark appears | [P] |
+| 3.5 | Token counter updates to reflect the ingested document tokens (should jump substantially) | [P] |
+| 3.6 | Uploading a second file : a second chip appears | [P] |
+| 3.7 | Clicking the **×** on a chip removes that file from the pending list | [P] |
+| 3.8 | Filename in the chip is truncated if long (with full name on hover) | [P] |
+| 3.9 | A draft session appears in the left sidebar once the first upload succeeds | [P] |
 | 3.10 | Uploading an unsupported file shows a red **structured error panel** (layman text + "Show technical details" toggle), not a plain red string | [ ] |
 | 3.11 | The structured error panel's "Show technical details" toggle reveals the HTTP status, error code, and raw exception | [ ] |
 
@@ -133,10 +133,10 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 4.1 | Dragging a file over the home page shows a blue dashed overlay with "Drop files to upload" | [ ] |
-| 4.2 | Dragging the file out of the window removes the overlay | [ ] |
-| 4.3 | Dropping the file uploads it (chip appears, token count updates) | [ ] |
-| 4.4 | Dropping multiple files at once uploads them sequentially (all chips appear) | [ ] |
+| 4.1 | Dragging a file over the home page shows a blue dashed overlay with "Drop files to upload" | [P] |
+| 4.2 | Dragging the file out of the window removes the overlay | [F] |
+| 4.3 | Dropping the file uploads it (chip appears, token count updates) | [P] |
+| 4.4 | Dropping multiple files at once uploads them sequentially (all chips appear) | [P] |
 
 ---
 
@@ -146,15 +146,15 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable str
 
 | # | File type | Result (chip ✓ / structured error text) |
 |---|---|---|
-| 5.1 | `.pdf` (valid, small) | [ ] |
-| 5.2 | `.docx` | [ ] |
-| 5.3 | `.txt` | [ ] |
-| 5.4 | `.md` | [ ] |
-| 5.5 | `.html` | [ ] |
-| 5.6 | `.xlsx` or another unsupported type : shows a structured error panel | [ ] |
+| 5.1 | `.pdf` (valid, small) | [P] |
+| 5.2 | `.docx` | [P] |
+| 5.3 | `.txt` | [P] |
+| 5.4 | `.md` | [P] |
+| 5.5 | `.html` | [P] |
+| 5.6 | `.xlsx` or another unsupported type : shows a structured error panel | [P] |
 | 5.7 | Corrupt `.pdf` (random bytes renamed) : shows a structured error, not a silent success | [ ] |
-| 5.8 | File with non-ASCII filename : chip displays the filename correctly | [ ] |
-| 5.9 | File with very long filename : chip truncates with ellipsis; full name on hover | [ ] |
+| 5.8 | File with non-ASCII filename : chip displays the filename correctly | [P] |
+| 5.9 | File with very long filename : chip truncates with ellipsis; full name on hover | [P] |
 | 5.10 | Uploading a large PDF (~150 pages) : ingest completes in a reasonable time (note the duration: ___ s) | [ ] |
 | 5.11 | A document deleted (via the session files menu) **during** background extraction does not produce a "Task exception was never retrieved" log noise on the backend | [ ] |
 
@@ -164,13 +164,13 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable str
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 6.1 | With input filled + file attached, the **Send** (↑ or ➤) button is enabled | [ ] |
-| 6.2 | With empty input + no file, the Send button is disabled | [ ] |
-| 6.3 | With empty input + file attached, Send is enabled (file-only submission allowed) | [ ] |
-| 6.4 | Clicking Send navigates to `/sessions/<id>` | [ ] |
+| 6.1 | With input filled + file attached, the **Send** (↑ or ➤) button is enabled | [P] |
+| 6.2 | With empty input + no file, the Send button is disabled | [P] |
+| 6.3 | With empty input + file attached, Send is enabled (file-only submission allowed) | [P] |
+| 6.4 | Clicking Send navigates to `/sessions/<id>` | [P] |
 | 6.5 | The URL carries `?prompt=...&audience=...` on first submit | [ ] |
 | 6.6 | URL query string is cleared after the session page mounts | [ ] |
-| 6.7 | Pressing **Enter** (without Shift) submits the same as clicking Send | [ ] |
+| 6.7 | Pressing **Enter** (without Shift) submits the same as clicking Send | [P] |
 
 ---
 
@@ -588,7 +588,7 @@ These checks exercise the v2.3.3 conversation-history grounding and artifact cat
 
 > Anything that didn't fit the checklist : UX friction, unclear labels, surprising behaviour, performance impressions, copy suggestions.
 
--
+- when file is dragged to window but not dropped, blue dashed overlay with "Drop files to upload" does not disappear
 -
 -
 

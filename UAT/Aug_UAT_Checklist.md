@@ -124,7 +124,7 @@ This pass covers all changes shipped in **v2.2.0 → v2.3.3** plus the post-2.3.
 | 3.7 | Clicking the **×** on a chip removes that file from the pending list | [P] |
 | 3.8 | Filename in the chip is truncated if long (with full name on hover) | [P] |
 | 3.9 | A draft session appears in the left sidebar once the first upload succeeds | [P] |
-| 3.10 | Uploading an unsupported file shows a red **structured error panel** (layman text + "Show technical details" toggle), not a plain red string | [ ] |
+| 3.10 | Uploading an unsupported file shows a red **structured error panel** (layman text + "Show technical details" toggle), not a plain red string | [P] |
 | 3.11 | The structured error panel's "Show technical details" toggle reveals the HTTP status, error code, and raw exception | [ ] |
 
 ---
@@ -155,7 +155,7 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable str
 | 5.7 | Corrupt `.pdf` (random bytes renamed) : shows a structured error, not a silent success | [ ] |
 | 5.8 | File with non-ASCII filename : chip displays the filename correctly | [P] |
 | 5.9 | File with very long filename : chip truncates with ellipsis; full name on hover | [P] |
-| 5.10 | Uploading a large PDF (~150 pages) : ingest completes in a reasonable time (note the duration: ___ s) | [ ] |
+| 5.10 | Uploading a large PDF (~150 pages) : ingest completes in a reasonable time (note the duration: ___ s) | [P] |
 | 5.11 | A document deleted (via the session files menu) **during** background extraction does not produce a "Task exception was never retrieved" log noise on the backend | [ ] |
 
 ---
@@ -178,14 +178,14 @@ Upload each file type. Confirm it produces a chip **or** surfaces a readable str
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 7.1 | Session page loads without a full page flash (no white flash) | [ ] |
+| 7.1 | Session page loads without a full page flash (no white flash) | [P] |
 | 7.2 | URL query string (`?prompt=...`) is cleared after initial load | [ ] |
-| 7.3 | The user's submitted prompt appears as a user bubble (right-aligned, blue) | [ ] |
+| 7.3 | The user's submitted prompt appears as a user bubble (right-aligned, blue) | [P] |
 | 7.4 | **Attached document chips appear inside the user bubble** (with the filename + small file icon) : fixed in v2.2.0 | [ ] |
-| 7.5 | A "Thinking…" panel appears below with a pulsing live indicator | [ ] |
-| 7.6 | Status text shows something like "Agents are starting up…" initially | [ ] |
-| 7.7 | Within ~5–10 seconds, the thinking panel shows agent activity | [ ] |
-| 7.8 | Agent Trace panel (bottom of chat) populates with `agent_spawned` / `tool_use` rows | [ ] |
+| 7.5 | A "Thinking…" panel appears below with a pulsing live indicator | [P] |
+| 7.6 | Status text shows something like "Agents are starting up…" initially | [P] |
+| 7.7 | Within ~5–10 seconds, the thinking panel shows agent activity | [P] |
+| 7.8 | Agent Trace panel (bottom of chat) populates with `agent_spawned` / `tool_use` rows | [P] |
 | 7.9 | The audience toggle in the header reflects the audience from the URL | [ ] |
 | 7.10 | The artifact preview canvas does **not** open the moment `artifact_written` fires : it stays closed until after the recap text has begun pacing into the bubble (three-step reveal sequence) | [ ] |
 | 7.11 | After `run_complete` fires, the streaming bubble swaps cleanly to the persisted assistant message (no partial-text hang requiring a refresh) | [ ] |
@@ -200,17 +200,17 @@ While the agents are working (before `finalize`):
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 8.1 | Thinking panel streams new text as agents progress (text grows over time) | [ ] |
+| 8.1 | Thinking panel streams new text as agents progress (text grows over time) | [P] |
 | 8.2 | Thinking panel auto-scrolls as new content arrives | [ ] |
-| 8.3 | Thinking panel's **Hide / Show** toggle works | [ ] |
-| 8.4 | Agent Trace panel shows `agent_spawned: lead_orchestrator` as the first entry | [ ] |
-| 8.5 | Subsequent `tool_use` rows show tool names (`read_document_chunk`, `search_document`, etc.) | [ ] |
-| 8.6 | When `spawn_subagent` is called, a new `agent_spawned` entry appears for each subagent | [ ] |
-| 8.7 | When `write_artifact` is called, a `tool_use: write_artifact` entry appears | [ ] |
-| 8.8 | Context Meter bar at the bottom of the input area updates over time | [ ] |
+| 8.3 | Thinking panel's **Hide / Show** toggle works | [P] |
+| 8.4 | Agent Trace panel shows `agent_spawned: lead_orchestrator` as the first entry | [P] |
+| 8.5 | Subsequent `tool_use` rows show tool names (`read_document_chunk`, `search_document`, etc.) | [P] |
+| 8.6 | When `spawn_subagent` is called, a new `agent_spawned` entry appears for each subagent | [P] |
+| 8.7 | When `write_artifact` is called, a `tool_use: write_artifact` entry appears | [P] |
+| 8.8 | Context Meter bar at the bottom of the input area updates over time | [P] |
 | 8.9 | Context Meter percentage is never above 100% (cap is respected) | [ ] |
-| 8.10 | The **Send** button is replaced with a red **Stop** (■) button while streaming | [ ] |
-| 8.11 | Typing in the input is disabled while streaming (input is greyed out) | [ ] |
+| 8.10 | The **Send** button is replaced with a red **Stop** (■) button while streaming | [P] |
+| 8.11 | Typing in the input is disabled while streaming (input is greyed out) | [P] |
 | 8.12 | **Subagent thought-process fragments stay intact** : when the Lead spawns ≥2 subagents in parallel, citation UUIDs in the Thinking panel render as `[filename p.N]` pills, **not** as garbled fragments like `todaf-421d-a53c-15`, `[107c814acb5334db81]`, or `406c-9537-5d8bf6d768fc]` (post-2.3.3 hotfix) | [ ] |
 | 8.13 | Each subagent's thinking output is prefixed with its role on its own line (e.g. `\n\n[Document analyser]\n…`) so concurrent agents are visually separated | [ ] |
 | 8.14 | (Optional, advisor mode only : `ADVISOR_MODEL` set) Advisor responses appear in the thinking panel prefixed with `[Advisor]` | [ ] |
@@ -226,18 +226,18 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 | 9.1 | When the Lead calls `finalize`, the final message begins **typing in letter-by-letter** (typewriter animation, server-paced via `text_delta` chunks) : the recap should not appear in one chunk | [ ] |
 | 9.2 | The typewriter speed feels natural : not instant, not sluggish (should take ~8–12s for a ~500-word recap) | [ ] |
 | 9.3 | A blinking cursor ▋ appears at the end of the text while it's typing | [ ] |
-| 9.4 | The thinking panel collapses (or its content clears) when the final message starts streaming : no duplication of the recap inside "Thinking…" | [ ] |
-| 9.5 | If an artifact was produced this turn, a **"Generated files"** section with a file button appears below the streaming text (while it's still typing, or just after) | [ ] |
-| 9.6 | The file button shows the artifact name (e.g. "Adam Smith's Wealth of Nations: Key Concepts Summary") | [ ] |
+| 9.4 | The thinking panel collapses (or its content clears) when the final message starts streaming : no duplication of the recap inside "Thinking…" | [P] |
+| 9.5 | If an artifact was produced this turn, a **"Generated files"** section with a file button appears below the streaming text (while it's still typing, or just after) | [P] |
+| 9.6 | The file button shows the artifact name (e.g. "Adam Smith's Wealth of Nations: Key Concepts Summary") | [P] |
 | 9.7 | The file button **hugs its title up to ~24 rem** then truncates : not a full-width row | [ ] |
-| 9.8 | Clicking the file button opens the **Artifact Preview** canvas on the right side of the window | [ ] |
+| 9.8 | Clicking the file button opens the **Artifact Preview** canvas on the right side of the window | [P] |
 | 9.9 | About ~600ms after the bubble swap, the Artifact Preview **auto-opens** on the right (if an artifact was produced) | [ ] |
-| 9.10 | The Artifact Preview does NOT pop open mid-stream in a jarring way (it should feel deliberate, after text has begun) | [ ] |
-| 9.11 | The chat column shrinks to make room for the preview (no overlap) | [ ] |
+| 9.10 | The Artifact Preview does NOT pop open mid-stream in a jarring way (it should feel deliberate, after text has begun) | [P] |
+| 9.11 | The chat column shrinks to make room for the preview (no overlap) | [P] |
 | 9.12 | After streaming finishes, the blinking cursor disappears | [ ] |
-| 9.13 | The assistant bubble now shows a **Copy** and **Retry** action row | [ ] |
-| 9.14 | No red console errors during the `final_message` / `run_complete` transition | [ ] |
-| 9.15 | `TypeError: Cannot read properties of null` does NOT appear anywhere in the console | [ ] |
+| 9.13 | The assistant bubble now shows a **Copy** and **Retry** action row | [P] |
+| 9.14 | No red console errors during the `final_message` / `run_complete` transition | [P] |
+| 9.15 | `TypeError: Cannot read properties of null` does NOT appear anywhere in the console | [P] |
 | 9.16 | `live_context_percent` clears (the bar resets to the post-run accurate value from `count_tokens`) within ~1s of `run_complete` | [ ] |
 | 9.17 | A second send within the same session works : the typewriter animates again, no stale state from the first run | [ ] |
 
@@ -247,19 +247,19 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 10.1 | Preview canvas slides in from the right (not a jump-cut) | [ ] |
-| 10.2 | Preview renders Markdown artifacts as formatted HTML (headings, bullets, tables) | [ ] |
-| 10.3 | HTML artifacts render with styles applied | [ ] |
+| 10.1 | Preview canvas slides in from the right (not a jump-cut) | [P] |
+| 10.2 | Preview renders Markdown artifacts as formatted HTML (headings, bullets, tables) | [P] |
+| 10.3 | HTML artifacts render with styles applied | [P] |
 | 10.4 | CSV artifacts render as a table | [ ] |
 | 10.5 | Plain-text artifacts render with clickable inline citation links (not raw `[uuid]` strings) | [ ] |
-| 10.6 | Citations inside the artifact (`[uuid]`) are clickable | [ ] |
-| 10.7 | Clicking a citation in the artifact opens the **Source Drawer** on the right (or overlays) with the chunk contents | [ ] |
+| 10.6 | Citations inside the artifact (`[uuid]`) are clickable | [P] |
+| 10.7 | Clicking a citation in the artifact opens the **Source Drawer** on the right (or overlays) with the chunk contents | [P] |
 | 10.8 | A **Copy** button is visible between the Download and Close buttons in the preview header | [ ] |
 | 10.9 | Clicking Copy copies the artifact contents and shows a 1.5 s ✓ confirmation | [ ] |
-| 10.10 | Clicking the × button on the preview closes it and returns the chat column to full width | [ ] |
-| 10.11 | Download button downloads the raw artifact (citations resolved to `[filename p.N]` for non-CSV formats) | [ ] |
+| 10.10 | Clicking the × button on the preview closes it and returns the chat column to full width | [P] |
+| 10.11 | Download button downloads the raw artifact (citations resolved to `[filename p.N]` for non-CSV formats) | [P] |
 | 10.12 | Resizing the browser window mid-preview : the canvas width re-calculates (no overflow, no collapse) | [ ] |
-| 10.13 | Opening an artifact, closing it, and reopening it from the session files menu works repeatedly without glitches | [ ] |
+| 10.13 | Opening an artifact, closing it, and reopening it from the session files menu works repeatedly without glitches | [P] |
 
 ---
 
@@ -269,12 +269,12 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 |---|---|---|
 | 11.1 | Citations in the assistant message appear as `[filename p.N]` (or `[filename §id]` for sectioned docs), **not** as raw `[uuid]` | [ ] |
 | 11.2 | Hovering a citation shows a tooltip with `View source : <filename> (p.N)` | [ ] |
-| 11.3 | Hovering a citation changes the cursor to a pointer | [ ] |
-| 11.4 | Clicking a citation opens the **Source Drawer** with the referenced chunk | [ ] |
-| 11.5 | Source Drawer shows: chunk text, section (if any), page (if any), filename | [ ] |
+| 11.3 | Hovering a citation changes the cursor to a pointer | [P] |
+| 11.4 | Clicking a citation opens the **Source Drawer** with the referenced chunk | [P] |
+| 11.5 | Source Drawer shows: chunk text, section (if any), page (if any), filename | [P] |
 | 11.6 | Switching between citations quickly does **not** show stale chunk content (AbortController in SourceDrawer cancels in-flight requests) | [ ] |
-| 11.7 | Closing the drawer (× or click outside) works | [ ] |
-| 11.8 | Multi-citation blocks `[uuid, uuid]` show each citation as a separate clickable element | [ ] |
+| 11.7 | Closing the drawer (× or click outside) works | [P] |
+| 11.8 | Multi-citation blocks `[uuid, uuid]` show each citation as a separate clickable element | [P] |
 | 11.9 | If a citation lookup initially returns `null` during streaming, it automatically retries ~2s later and the label updates from raw UUID to `[filename p.N]` | [ ] |
 | 11.10 | Clicking a citation whose chunk has been deleted from the session does not crash the drawer : it shows a "not found" / empty state | [ ] |
 
@@ -284,15 +284,15 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 12.1 | Trace panel is collapsible (click header to expand/collapse) | [ ] |
-| 12.2 | Trace entries show a timestamp and an icon per event type | [ ] |
-| 12.3 | `agent_spawned` rows show the agent's role | [ ] |
-| 12.4 | `tool_use` rows show the tool name and expandable input JSON | [ ] |
-| 12.5 | `artifact_written` rows show the artifact name | [ ] |
+| 12.1 | Trace panel is collapsible (click header to expand/collapse) | [P] |
+| 12.2 | Trace entries show a timestamp and an icon per event type | [P] |
+| 12.3 | `agent_spawned` rows show the agent's role | [P] |
+| 12.4 | `tool_use` rows show the tool name and expandable input JSON | [P] |
+| 12.5 | `artifact_written` rows show the artifact name | [P] |
 | 12.6 | `agent_done` rows show **up to 2000 chars** of the subagent summary (collapsed: 80-char preview; expanded: full text in a scrollable monospace block) : not cut off at 200 chars | [ ] |
 | 12.7 | `compaction_done` rows show before/after token counts | [ ] |
-| 12.8 | Trace survives a browser refresh (reload the page : events reappear) | [ ] |
-| 12.9 | Trace survives switching to another session and back (no duplication) | [ ] |
+| 12.8 | Trace survives a browser refresh (reload the page : events reappear) | [P] |
+| 12.9 | Trace survives switching to another session and back (no duplication) | [P] |
 
 ---
 
@@ -300,17 +300,17 @@ These checks cover the typewriter + three-step artifact reveal contract introduc
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 13.1 | Sidebar lists all sessions, most recent first | [ ] |
-| 13.2 | Active session is highlighted | [ ] |
-| 13.3 | Clicking a different session navigates to it without a full page flash | [ ] |
-| 13.4 | Session titles auto-generate from the first user message after first send | [ ] |
-| 13.5 | Pin button on a session row moves it to a pinned group (top) | [ ] |
-| 13.6 | Unpinning moves it back to the regular list | [ ] |
-| 13.7 | Rename via pencil icon lets you edit the title inline | [ ] |
-| 13.8 | Rename persists after page refresh | [ ] |
-| 13.9 | Delete button prompts for confirmation (or uses a destructive style) | [ ] |
-| 13.10 | Deleting a session removes it from the list and navigates away if it was active | [ ] |
-| 13.11 | Deleting a session does NOT leave an orphaned route (no 404 on the now-dead URL) | [ ] |
+| 13.1 | Sidebar lists all sessions, most recent first | [P] |
+| 13.2 | Active session is highlighted | [P] |
+| 13.3 | Clicking a different session navigates to it without a full page flash | [P] |
+| 13.4 | Session titles auto-generate from the first user message after first send | [P] |
+| 13.5 | Pin button on a session row moves it to a pinned group (top) | [P] |
+| 13.6 | Unpinning moves it back to the regular list | [P] |
+| 13.7 | Rename via pencil icon lets you edit the title inline | [P] |
+| 13.8 | Rename persists after page refresh | [P] |
+| 13.9 | Delete button prompts for confirmation (or uses a destructive style) | [P] |
+| 13.10 | Deleting a session removes it from the list and navigates away if it was active | [P] |
+| 13.11 | Deleting a session does NOT leave an orphaned route (no 404 on the now-dead URL) | [P] |
 | 13.12 | A session with an in-flight run has a visible "running" indicator (if applicable) | [ ] |
 | 13.13 | Reloading the page while a run is in flight automatically re-attaches the SSE stream (based on `last_run_state`) : the in-progress recap continues from where it was | [ ] |
 | 13.14 | Closing the browser tab and reopening the session while the run is still active reattaches correctly; persisted trace fills any gap | [ ] |
@@ -323,15 +323,15 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 14.1 | Switching audience persists across reload (session detail endpoint saves it) | [ ] |
+| 14.1 | Switching audience persists across reload (session detail endpoint saves it) | [P] |
 | 14.2 | **Layperson** mode produces plainer language: short sentences (≤20 words), everyday verbs, no Latin / no statute numbers / no unexpanded acronyms | [ ] |
 | 14.3 | **Professional** mode produces business/technical language: 20–40 word sentences, acronyms expanded on first use, section references where they aid navigation | [ ] |
 | 14.4 | **Expert** mode produces technical / precise / domain-specific language: full statutory references in canonical form, Latin terms where they carry specific meaning | [ ] |
 | 14.5 | The three audience outputs for the **same prompt + same document** are visibly different in register (not just paraphrases of one another) | [ ] |
 | 14.6 | The finalize-time self-check catches register violations : a layperson reply does not silently smuggle in section numbers or Latin | [ ] |
-| 14.7 | Typing "explain in layman's terms" while Professional is selected auto-switches to Layperson | [ ] |
-| 14.8 | Typing "give me the expert analysis" auto-switches to Expert | [ ] |
-| 14.9 | Casual language like "simple question" does NOT falsely trigger an audience switch | [ ] |
+| 14.7 | Typing "explain in layman's terms" while Professional is selected auto-switches to Layperson | [P] |
+| 14.8 | Typing "give me the expert analysis" auto-switches to Expert | [P] |
+| 14.9 | Casual language like "simple question" does NOT falsely trigger an audience switch | [P] |
 | 14.10 | Toggling the audience (or inferring it from a prompt) shows a centred italic banner in chat: `~ switched to layperson mode ~` (or the equivalent for professional / expert) | [ ] |
 | 14.11 | Audience-change banners are **transient** : they disappear on page reload (not persisted) | [ ] |
 
@@ -341,15 +341,15 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 15.1 | Only the **last** assistant message shows a Retry button | [ ] |
-| 15.2 | Clicking Retry removes the current assistant reply and re-runs the user prompt | [ ] |
-| 15.3 | After retry, a new recap + new artifact (if applicable) appears in the same slot | [ ] |
-| 15.4 | Every user message has an **Edit** (pencil) button | [ ] |
-| 15.5 | Clicking Edit turns the bubble into a textarea with Save/Cancel | [ ] |
-| 15.6 | The edit textarea retains the bubble's width (doesn't collapse) | [ ] |
-| 15.7 | Saving an edit truncates all messages after it and re-runs | [ ] |
-| 15.8 | Cancelling an edit restores the original bubble | [ ] |
-| 15.9 | Editing a middle-of-conversation message wipes subsequent turns (not just the next one) | [ ] |
+| 15.1 | Only the **last** assistant message shows a Retry button | [P] |
+| 15.2 | Clicking Retry removes the current assistant reply and re-runs the user prompt | [P] |
+| 15.3 | After retry, a new recap + new artifact (if applicable) appears in the same slot | [P] |
+| 15.4 | Every user message has an **Edit** (pencil) button | [P] |
+| 15.5 | Clicking Edit turns the bubble into a textarea with Save/Cancel | [P] |
+| 15.6 | The edit textarea retains the bubble's width (doesn't collapse) | [P] |
+| 15.7 | Saving an edit truncates all messages after it and re-runs | [P] |
+| 15.8 | Cancelling an edit restores the original bubble | [P] |
+| 15.9 | Editing a middle-of-conversation message wipes subsequent turns (not just the next one) | [P] |
 | 15.10 | Attached-doc chips on an edited message are preserved (the message keeps its `attached_document_ids`) | [ ] |
 | 15.11 | After edit + re-run, attached-doc chips re-appear on the edited bubble | [ ] |
 
@@ -381,16 +381,16 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 17.1 | Clicking the search icon in the input bar reveals a search field | [ ] |
-| 17.2 | Typing a query highlights matches in the messages (amber/yellow highlight) | [ ] |
-| 17.3 | The counter shows `1 / N` where N is the total match count | [ ] |
-| 17.4 | **Enter** jumps to the next match and scrolls it into view | [ ] |
-| 17.5 | **Shift+Enter** jumps to the previous match | [ ] |
-| 17.6 | The current match is styled differently from other matches (more vivid highlight) | [ ] |
-| 17.7 | Esc closes the search and clears the query | [ ] |
-| 17.8 | Search works on both user and assistant messages | [ ] |
-| 17.9 | Search does NOT match inside citation UUIDs (or if it does, it's intentional) | [ ] |
-| 17.10 | Clearing the query removes all highlights | [ ] |
+| 17.1 | Clicking the search icon in the input bar reveals a search field | [P] |
+| 17.2 | Typing a query highlights matches in the messages (amber/yellow highlight) | [P] |
+| 17.3 | The counter shows `1 / N` where N is the total match count | [P] |
+| 17.4 | **Enter** jumps to the next match and scrolls it into view | [P] |
+| 17.5 | **Shift+Enter** jumps to the previous match | [P] |
+| 17.6 | The current match is styled differently from other matches (more vivid highlight) | [P] |
+| 17.7 | Esc closes the search and clears the query | [P] |
+| 17.8 | Search works on both user and assistant messages | [P] |
+| 17.9 | Search does NOT match inside citation UUIDs (or if it does, it's intentional) | [P] |
+| 17.10 | Clearing the query removes all highlights | [P] |
 
 ---
 
@@ -398,20 +398,20 @@ Test all three levels on the **same document + same question** to confirm the ou
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 18.1 | Clicking **Stop** during streaming halts the run within ~2s | [ ] |
-| 18.2 | A "[stopped]" indicator appears on the partial reply | [ ] |
-| 18.3 | After stop, input is re-enabled | [ ] |
+| 18.1 | Clicking **Stop** during streaming halts the run within ~2s | [P] |
+| 18.2 | A "[stopped]" indicator appears on the partial reply | [P] |
+| 18.3 | After stop, input is re-enabled | [P] |
 | 18.4 | The session's `last_run_state` transitions to `"cancelled"` after Stop (verifiable via `GET /api/sessions/<id>` → `last_run_state` field) | [ ] |
 | 18.5 | Calling `POST /api/sessions/<id>/cancel` on an idle session returns `{ "cancelled": false }` (idempotent : no crash) | [ ] |
 | 18.6 | Killing the backend mid-stream surfaces a readable structured error banner (not a silent hang) | [ ] |
-| 18.7 | Disconnecting WiFi mid-stream : UI recovers gracefully after reconnect | [ ] |
+| 18.7 | Disconnecting WiFi mid-stream : UI recovers gracefully after reconnect | [P] |
 | 18.8 | An orchestrator error (e.g. Anthropic 4xx/5xx that exhausts retries) appears as an inline **ErrorBanner** in the chat : layman text by default, with a "Show technical details" toggle that reveals status, code, and raw message | [ ] |
 | 18.9 | Error banners are transient : they disappear on page reload (not persisted) | [ ] |
 | 18.10 | Hitting the Anthropic rate limit (429) does not crash the run : the retry wrapper backs off and either succeeds or eventually surfaces a rate-limit ErrorBanner | [ ] |
 | 18.11 | A 429 with a `retry-after` header is honoured (waits at least that long before the next attempt) | [ ] |
 | 18.12 | Spawning many parallel subagents does **not** exceed the concurrency semaphore (default 3) : observable via gentler ramp on the Anthropic dashboard / no 429 storms | [ ] |
-| 18.13 | Sending a message with no document uploaded still works (or shows a helpful empty-state) | [ ] |
-| 18.14 | Sending a nonsensical prompt ("asdfghjkl") still returns a reply without crashing | [ ] |
+| 18.13 | Sending a message with no document uploaded still works (or shows a helpful empty-state) | [P] |
+| 18.14 | Sending a nonsensical prompt ("asdfghjkl") still returns a reply without crashing | [P] |
 | 18.15 | The SSE stream endpoint for a session with no in-flight run returns a synthetic `run_complete` and closes (does not hang indefinitely) | [ ] |
 
 ---
@@ -422,14 +422,14 @@ After a full run completes, refresh the browser (Ctrl/Cmd+R):
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 19.1 | The user + assistant messages all reappear in order | [ ] |
-| 19.2 | Inline citations still clickable after reload | [ ] |
-| 19.3 | Generated artifact buttons still visible under the right assistant message | [ ] |
-| 19.4 | Clicking an artifact button after reload opens the preview canvas | [ ] |
-| 19.5 | Agent trace events reappear (persisted trace) | [ ] |
-| 19.6 | Context meter shows a seeded value (not stuck at 0) | [ ] |
-| 19.7 | Audience toggle matches what was set before reload | [ ] |
-| 19.8 | Session title matches (no reset to default) | [ ] |
+| 19.1 | The user + assistant messages all reappear in order | [P] |
+| 19.2 | Inline citations still clickable after reload | [P] |
+| 19.3 | Generated artifact buttons still visible under the right assistant message | [P] |
+| 19.4 | Clicking an artifact button after reload opens the preview canvas | [P] |
+| 19.5 | Agent trace events reappear (persisted trace) | [P] |
+| 19.6 | Context meter shows a seeded value (not stuck at 0) | [P] |
+| 19.7 | Audience toggle matches what was set before reload | [P] |
+| 19.8 | Session title matches (no reset to default) | [P] |
 | 19.9 | **Thinking panel for past turns is present and collapsed by default** : clicking the header expands it and reveals the persisted reasoning text (not blank, not missing) | [ ] |
 | 19.10 | Attached-doc chips on each user message reappear correctly after reload (per-message `attached_document_ids`) | [ ] |
 | 19.11 | Audience-change banners and ErrorBanners do **not** reappear after reload (transient by design) | [ ] |
@@ -490,16 +490,16 @@ These checks exercise the v2.3.1 hallucination hardening, the v2.3.3 retry-on-nu
 
 | # | Item | P / F / NA |
 |---|---|---|
-| 23.1 | All buttons have hover states (colour or background change) | [ ] |
-| 23.2 | All interactive elements show a pointer cursor | [ ] |
-| 23.3 | Focus outlines are visible when tabbing through elements | [ ] |
-| 23.4 | Text contrast is readable (no grey-on-grey that's hard to read) | [ ] |
-| 23.5 | Tooltips on icon buttons appear on hover (Copy, Edit, Retry, etc.) | [ ] |
-| 23.6 | No element overflows its container at any viewport ≥1024px | [ ] |
-| 23.7 | Scroll bars appear where needed (long messages, long trace panels) and don't double up | [ ] |
-| 23.8 | No layout shift ("jumpy" content) during streaming : the artifact preview's deferred open prevents mid-stream reflow | [ ] |
-| 23.9 | Font rendering is consistent (monospace only in code blocks and thinking panel) | [ ] |
-| 23.10 | No obvious emoji or test strings left over from development | [ ] |
+| 23.1 | All buttons have hover states (colour or background change) | [P] |
+| 23.2 | All interactive elements show a pointer cursor | [P] |
+| 23.3 | Focus outlines are visible when tabbing through elements | [P] |
+| 23.4 | Text contrast is readable (no grey-on-grey that's hard to read) | [P] |
+| 23.5 | Tooltips on icon buttons appear on hover (Copy, Edit, Retry, etc.) | [P] |
+| 23.6 | No element overflows its container at any viewport ≥1024px | [P] |
+| 23.7 | Scroll bars appear where needed (long messages, long trace panels) and don't double up | [P] |
+| 23.8 | No layout shift ("jumpy" content) during streaming : the artifact preview's deferred open prevents mid-stream reflow | [P] |
+| 23.9 | Font rendering is consistent (monospace only in code blocks and thinking panel) | [P] |
+| 23.10 | No obvious emoji or test strings left over from development | [P] |
 | 23.11 | The white-on-dark CTA palette is consistent across START, + New chat, audience toggle, and Send buttons | [ ] |
 | 23.12 | The artifact card width is proportional to its title : short titles get small cards; long titles cap at ~24 rem | [ ] |
 
@@ -511,9 +511,9 @@ Repeat sections 1, 6, 9, and 22 in at least two browsers.
 
 | Browser | Splash loads | Start chat works | Final delivery flow works | Citation pills clean (no UUID fragments) |
 |---|---|---|---|---|
-| Chrome | [ ] | [ ] | [ ] | [ ] |
-| Firefox | [ ] | [ ] | [ ] | [ ] |
-| Edge / Safari | [ ] | [ ] | [ ] | [ ] |
+| Chrome | [P] | [P] | [P] | [ ] |
+| Firefox | [P] | [P] | [P] | [ ] |
+| Edge / Safari | [P] | [P] | [P] | [ ] |
 
 ---
 

@@ -401,5 +401,5 @@ SQLite uses WAL mode. On Windows, two processes opening the same `Constellation.
 - [ARCHITECTURE.md](ARCHITECTURE.md). component-level architecture notes.
 - [CHANGELOG.md](CHANGELOG.md). version history.
 - [PLAN.md](PLAN.md). roadmap and design rationale for Phase B (document diff, semantic search, cross-document RAG).
-- [TODO.md](TO-DO.md): Tasks items to do.
+- [TODO.md](TODO.md): Tasks items to do.
 
